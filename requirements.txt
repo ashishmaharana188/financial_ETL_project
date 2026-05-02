@@ -1,0 +1,10 @@
+pandas
+numpy
+yfinance
+requests
+urllib3
+beautifulsoup4
+SQLAlchemy
+psycopg2-binary
+google-generativeai
+python-dotenv

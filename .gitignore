@@ -1,0 +1,14 @@
+
+.env
+
+venv/
+env/
+
+offline_statements/
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+.DS_Store
+Thumbs.db
