@@ -1,413 +1,408 @@
 {
-    "ittelson_income_statement_columns": [
-        "TotalRevenue",
-        "CostOfRevenue",
-        "GrossProfit",
-        "OperatingExpense",
-        "OperatingIncome",
-        "NetInterestIncome",
-        "TaxProvision",
-        "NetIncome"
+  "ittelson_income_statement_columns": [
+    "TotalRevenue",
+    "CostOfRevenue",
+    "GrossProfit",
+    "OperatingExpense",
+    "OperatingIncome",
+    "NetInterestIncome",
+    "TaxProvision",
+    "NetIncome"
+  ],
+  "normalized_is_synonym_map": {
+    "TotalRevenue": ["TotalRevenue", "OperatingRevenue", "Sales"],
+    "CostOfRevenue": [
+      "CostOfRevenue",
+      "ReconciledCostOfRevenue",
+      "CostofGoodsAndServicesSold"
     ],
-    "normalized_is_synonym_map": {
-        "TotalRevenue": ["TotalRevenue", "OperatingRevenue", "Sales"],
-        "CostOfRevenue": [
-            "CostOfRevenue",
-            "ReconciledCostOfRevenue",
-            "CostofGoodsAndServicesSold"
-        ],
-        "GrossProfit": ["GrossProfit"],
-        "OperatingExpense": [
-            "OperatingExpense",
-            "OperatingExpenses",
-            "SellingGeneralAndAdministration",
-            "SellingGeneralAndAdministrative",
-            "OtherOperatingExpenses",
-            "ResearchAndDevelopment",
-            "SellingAndMarketingExpense",
-            "GeneralAndAdministrativeExpense",
-            "OtherGandA",
-            "TotalExpenses"
-        ],
-        "OperatingIncome": [
-            "OperatingIncome",
-            "TotalOperatingIncomeAsReported",
-            "OperatingProfit",
-            "Ebit"
-        ],
-        "NetInterestIncome": [
-            "NetInterestIncome",
-            "NetNonOperatingInterestIncomeExpense",
-            "Interest",
-            "InterestIncome",
-            "InterestExpense",
-            "InterestAndDebtExpense",
-            "InterestExpenseNonOperating",
-            "InterestIncomeNonOperating"
-        ],
-        "TaxProvision": ["TaxProvision", "IncomeTaxExpense", "Tax"],
-        "NetIncome": [
-            "NetIncome",
-            "NetProfit",
-            "NetIncomeCommonStockholders",
-            "NetIncomeContinuousOperations",
-            "NetIncomeFromContinuingOperations",
-            "NetIncomeIncludingNoncontrollingInterests",
-            "NetIncomeFromContinuingAndDiscontinuedOperation",
-            "NetIncomeFromContinuingOperationNetMinorityInterest",
-            "ProfitForEps",
-            "ProfitForPe"
-        ],
-        "PretaxIncome": ["PretaxIncome", "ProfitBeforeTax", "IncomeBeforeTax"],
-        "MaterialCost": ["MaterialCost"],
-        "ManufacturingCost": ["ManufacturingCost"],
-        "EmployeeCost": ["EmployeeCost"],
-        "OtherCost": ["OtherCost"]
-    },
+    "GrossProfit": ["GrossProfit"],
+    "OperatingExpense": [
+      "OperatingExpense",
+      "OperatingExpenses",
+      "SellingGeneralAndAdministration",
+      "SellingGeneralAndAdministrative",
+      "OtherOperatingExpenses",
+      "ResearchAndDevelopment",
+      "SellingAndMarketingExpense",
+      "GeneralAndAdministrativeExpense",
+      "OtherGandA",
+      "TotalExpenses"
+    ],
+    "OperatingIncome": [
+      "OperatingIncome",
+      "TotalOperatingIncomeAsReported",
+      "OperatingProfit",
+      "Ebit"
+    ],
+    "NetInterestIncome": [
+      "NetInterestIncome",
+      "NetNonOperatingInterestIncomeExpense",
+      "Interest",
+      "InterestIncome",
+      "InterestExpense",
+      "InterestAndDebtExpense",
+      "InterestExpenseNonOperating",
+      "InterestIncomeNonOperating"
+    ],
+    "TaxProvision": ["TaxProvision", "IncomeTaxExpense", "Tax"],
+    "NetIncome": [
+      "NetIncome",
+      "NetProfit",
+      "NetIncomeCommonStockholders",
+      "NetIncomeContinuousOperations",
+      "NetIncomeFromContinuingOperations",
+      "NetIncomeIncludingNoncontrollingInterests",
+      "NetIncomeFromContinuingAndDiscontinuedOperation",
+      "NetIncomeFromContinuingOperationNetMinorityInterest",
+      "ProfitForEps",
+      "ProfitForPe"
+    ],
+    "PretaxIncome": ["PretaxIncome", "ProfitBeforeTax", "IncomeBeforeTax"],
+    "MaterialCost": ["MaterialCost"],
+    "ManufacturingCost": ["ManufacturingCost"],
+    "EmployeeCost": ["EmployeeCost"],
+    "OtherCost": ["OtherCost"]
+  },
 
-    "ittelson_screener_balance_sheet_map": {
-        "Cash Equivalents": "CashCashEquivalentsAndShortTermInvestments",
-        "Trade receivables": "Receivables",
-        "Inventories": "Inventory",
-        "Gross Block": "GrossPPE",
-        "Accumulated Depreciation": "AccumulatedDepreciation",
-        "Fixed Assets": "NetPPE",
-        "Total Assets": "TotalAssets",
-        "Trade Payables": "PayablesAndAccruedExpenses",
-        "Short term Borrowings": "CurrentDebtAndCapitalLeaseObligation",
-        "Long term Borrowings": "LongTermDebtAndCapitalLeaseObligation",
-        "Equity Capital": "CapitalStock",
-        "Reserves": "RetainedEarnings"
-    },
-    "yfinance_to_ittelson_map": {
-        "AccountsReceivable": "Receivables",
-        "AccountsPayable": "PayablesAndAccruedExpenses",
-        "Inventory": "Inventory",
-        "GrossPPE": "GrossPPE",
-        "AccumulatedDepreciation": "AccumulatedDepreciation",
-        "NetPPE": "NetPPE",
-        "TotalAssets": "TotalAssets",
-        "CurrentDebtAndCapitalLeaseObligation": "CurrentDebtAndCapitalLeaseObligation",
-        "LongTermDebtAndCapitalLeaseObligation": "LongTermDebtAndCapitalLeaseObligation",
-        "TotalTaxPayable": "TotalTaxPayable",
-        "CapitalStock": "CapitalStock",
-        "RetainedEarnings": "RetainedEarnings",
-        "StockholdersEquity": "StockholdersEquity"
-    },
-    "normalized_bs_synonym_map": {
-        "CashCashEquivalentsAndShortTermInvestments": [
-            "CashCashEquivalentsAndShortTermInvestments",
-            "CashAndCashEquivalents",
-            "CashFinancial"
-        ],
-        "Receivables": [
-            "Receivables",
-            "AccountsReceivable",
-            "TradeReceivables"
-        ],
-        "Inventory": ["Inventory", "Inventories"],
-        "CurrentAssets": ["CurrentAssets"],
-        "TotalNonCurrentAssets": ["TotalNonCurrentAssets"],
-        "GrossPPE": ["GrossPPE", "GrossPpe", "GrossBlock"],
-        "AccumulatedDepreciation": ["AccumulatedDepreciation"],
-        "NetPPE": ["NetPPE", "NetPpe", "FixedAssets"],
-        "TotalAssets": ["TotalAssets"],
-        "PayablesAndAccruedExpenses": [
-            "PayablesAndAccruedExpenses",
-            "AccountsPayable",
-            "Payables"
-        ],
-        "CurrentDebtAndCapitalLeaseObligation": [
-            "CurrentDebtAndCapitalLeaseObligation",
-            "CurrentDebt",
-            "CurrentCapitalLeaseObligation"
-        ],
-        "TotalTaxPayable": ["TotalTaxPayable", "TaxesPayable"],
-        "CurrentLiabilities": ["CurrentLiabilities"],
-        "LongTermDebtAndCapitalLeaseObligation": [
-            "LongTermDebtAndCapitalLeaseObligation",
-            "LongTermDebt",
-            "LongTermCapitalLeaseObligation"
-        ],
-        "TotalLiabilitiesNetMinorityInterest": [
-            "TotalLiabilitiesNetMinorityInterest"
-        ],
-        "CapitalStock": ["CapitalStock", "CommonStock", "EquityCapital"],
-        "RetainedEarnings": ["RetainedEarnings", "Reserves"],
-        "StockholdersEquity": [
-            "TotalEquityGrossMinorityInterest",
-            "StockholdersEquity",
-            "CommonStockEquity"
-        ],
-        "CashEquivalents": ["CashEquivalents"],
-        "ShortTermInvestments": [
-            "ShortTermInvestments",
-            "OtherShortTermInvestments"
-        ],
-        "Investments": ["Investments"],
-        "LoansNAdvances": ["LoansNAdvances"],
-        "OtherAssetItems": ["OtherAssetItems"],
-        "TradePayables": ["TradePayables"],
-        "AdvanceFromCustomers": ["AdvanceFromCustomers"],
-        "ShortTermBorrowings": ["ShortTermBorrowings"],
-        "LeaseLiabilities": ["LeaseLiabilities"],
-        "LongTermBorrowings": ["LongTermBorrowings"],
-        "OtherBorrowings": ["OtherBorrowings"],
-        "OtherLiabilityItems": ["OtherLiabilityItems"],
-        "Borrowings": ["Borrowings"],
-        "OtherLiabilities": ["OtherLiabilities"]
-    },
-    "ittelson_balance_sheet_columns": [
-        "CashCashEquivalentsAndShortTermInvestments",
-        "Receivables",
-        "Inventory",
-        "CurrentAssets",
-        "TotalNonCurrentAssets",
-        "GrossPPE",
-        "AccumulatedDepreciation",
-        "NetPPE",
-        "TotalAssets",
-        "PayablesAndAccruedExpenses",
-        "CurrentDebtAndCapitalLeaseObligation",
-        "TotalTaxPayable",
-        "CurrentLiabilities",
-        "LongTermDebtAndCapitalLeaseObligation",
-        "TotalLiabilitiesNetMinorityInterest",
-        "CapitalStock",
-        "RetainedEarnings",
-        "StockholdersEquity"
+  "ittelson_screener_balance_sheet_map": {
+    "Cash Equivalents": "CashCashEquivalentsAndShortTermInvestments",
+    "Trade receivables": "Receivables",
+    "Inventories": "Inventory",
+    "Gross Block": "GrossPPE",
+    "Accumulated Depreciation": "AccumulatedDepreciation",
+    "Fixed Assets": "NetPPE",
+    "Total Assets": "TotalAssets",
+    "Trade Payables": "PayablesAndAccruedExpenses",
+    "Short term Borrowings": "CurrentDebtAndCapitalLeaseObligation",
+    "Long term Borrowings": "LongTermDebtAndCapitalLeaseObligation",
+    "Equity Capital": "CapitalStock",
+    "Reserves": "RetainedEarnings"
+  },
+  "yfinance_to_ittelson_map": {
+    "AccountsReceivable": "Receivables",
+    "AccountsPayable": "PayablesAndAccruedExpenses",
+    "Inventory": "Inventory",
+    "GrossPPE": "GrossPPE",
+    "AccumulatedDepreciation": "AccumulatedDepreciation",
+    "NetPPE": "NetPPE",
+    "TotalAssets": "TotalAssets",
+    "CurrentDebtAndCapitalLeaseObligation": "CurrentDebtAndCapitalLeaseObligation",
+    "LongTermDebtAndCapitalLeaseObligation": "LongTermDebtAndCapitalLeaseObligation",
+    "TotalTaxPayable": "TotalTaxPayable",
+    "CapitalStock": "CapitalStock",
+    "RetainedEarnings": "RetainedEarnings",
+    "StockholdersEquity": "StockholdersEquity"
+  },
+  "normalized_bs_synonym_map": {
+    "CashCashEquivalentsAndShortTermInvestments": [
+      "CashCashEquivalentsAndShortTermInvestments",
+      "CashAndCashEquivalents",
+      "CashFinancial"
     ],
+    "Receivables": ["Receivables", "AccountsReceivable", "TradeReceivables"],
+    "Inventory": ["Inventory", "Inventories"],
+    "CurrentAssets": ["CurrentAssets"],
+    "TotalNonCurrentAssets": ["TotalNonCurrentAssets"],
+    "GrossPPE": ["GrossPPE", "GrossPpe", "GrossBlock"],
+    "AccumulatedDepreciation": ["AccumulatedDepreciation"],
+    "NetPPE": ["NetPPE", "NetPpe", "FixedAssets"],
+    "TotalAssets": ["TotalAssets"],
+    "PayablesAndAccruedExpenses": [
+      "PayablesAndAccruedExpenses",
+      "AccountsPayable",
+      "Payables"
+    ],
+    "CurrentDebtAndCapitalLeaseObligation": [
+      "CurrentDebtAndCapitalLeaseObligation",
+      "CurrentDebt",
+      "CurrentCapitalLeaseObligation"
+    ],
+    "TotalTaxPayable": ["TotalTaxPayable", "TaxesPayable"],
+    "CurrentLiabilities": ["CurrentLiabilities"],
+    "LongTermDebtAndCapitalLeaseObligation": [
+      "LongTermDebtAndCapitalLeaseObligation",
+      "LongTermDebt",
+      "LongTermCapitalLeaseObligation"
+    ],
+    "TotalLiabilitiesNetMinorityInterest": [
+      "TotalLiabilitiesNetMinorityInterest"
+    ],
+    "CapitalStock": ["CapitalStock", "CommonStock", "EquityCapital"],
+    "RetainedEarnings": ["RetainedEarnings", "Reserves"],
+    "StockholdersEquity": [
+      "TotalEquityGrossMinorityInterest",
+      "StockholdersEquity",
+      "CommonStockEquity"
+    ],
+    "CashEquivalents": ["CashEquivalents"],
+    "ShortTermInvestments": [
+      "ShortTermInvestments",
+      "OtherShortTermInvestments"
+    ],
+    "Investments": ["Investments"],
+    "LoansNAdvances": ["LoansNAdvances"],
+    "OtherAssetItems": ["OtherAssetItems"],
+    "TradePayables": ["TradePayables"],
+    "AdvanceFromCustomers": ["AdvanceFromCustomers"],
+    "ShortTermBorrowings": ["ShortTermBorrowings"],
+    "LeaseLiabilities": ["LeaseLiabilities"],
+    "LongTermBorrowings": ["LongTermBorrowings"],
+    "OtherBorrowings": ["OtherBorrowings"],
+    "OtherLiabilityItems": ["OtherLiabilityItems"],
+    "Borrowings": ["Borrowings"],
+    "OtherLiabilities": ["OtherLiabilities"]
+  },
+  "ittelson_balance_sheet_columns": [
+    "CashCashEquivalentsAndShortTermInvestments",
+    "Receivables",
+    "Inventory",
+    "CurrentAssets",
+    "TotalNonCurrentAssets",
+    "GrossPPE",
+    "AccumulatedDepreciation",
+    "NetPPE",
+    "TotalAssets",
+    "PayablesAndAccruedExpenses",
+    "CurrentDebtAndCapitalLeaseObligation",
+    "TotalTaxPayable",
+    "CurrentLiabilities",
+    "LongTermDebtAndCapitalLeaseObligation",
+    "TotalLiabilitiesNetMinorityInterest",
+    "CapitalStock",
+    "RetainedEarnings",
+    "StockholdersEquity"
+  ],
 
-    "ittelson_cash_flow_columns": [
-        "BeginningCashBalance",
-        "CashReceipts",
-        "CashDisbursements",
-        "CashFromOperations",
-        "FixedAssetPurchases",
-        "NetBorrowing",
-        "IncomeTaxPaid",
-        "SaleOfStock",
-        "EndingCashBalance"
+  "ittelson_cash_flow_columns": [
+    "BeginningCashBalance",
+    "CashReceipts",
+    "CashDisbursements",
+    "CashFromOperations",
+    "FixedAssetPurchases",
+    "NetBorrowing",
+    "IncomeTaxPaid",
+    "SaleOfStock",
+    "EndingCashBalance"
+  ],
+  "normalized_cf_synonym_map": {
+    "BeginningCashBalance": ["BeginningCashBalance", "BeginningCashPosition"],
+    "CashReceipts": [],
+    "CashDisbursements": [],
+    "CashFromOperations": [
+      "CashFromOperations",
+      "CashFlowFromContinuingOperatingActivities",
+      "OperatingCashFlow",
+      "CashFromOperatingActivity"
     ],
-    "normalized_cf_synonym_map": {
-        "BeginningCashBalance": [
-            "BeginningCashBalance",
-            "BeginningCashPosition"
-        ],
-        "CashReceipts": [],
-        "CashDisbursements": [],
-        "CashFromOperations": [
-            "CashFromOperations",
-            "CashFlowFromContinuingOperatingActivities",
-            "OperatingCashFlow",
-            "CashFromOperatingActivity"
-        ],
-        "FixedAssetPurchases": [
-            "FixedAssetPurchases",
-            "CapitalExpenditure",
-            "PurchaseOfPPE",
-            "PurchaseOfPpe",
-            "FixedAssetsPurchased"
-        ],
-        "NetBorrowing": [
-            "NetBorrowing",
-            "NetIssuancePaymentsOfDebt",
-            "NetLongTermDebtIssuance"
-        ],
-        "IncomeTaxPaid": [
-            "IncomeTaxPaid",
-            "IncomeTaxPaidSupplementalData",
-            "TaxesRefundPaid",
-            "DirectTaxes"
-        ],
-        "SaleOfStock": [
-            "SaleOfStock",
-            "NetCommonStockIssuance",
-            "IssuanceOfCapitalStock",
-            "CommonStockIssuance",
-            "ProceedsFromShares"
-        ],
-        "EndingCashBalance": ["EndingCashBalance", "EndCashPosition"],
-        "RepaymentOfBorrowings": [
-            "RepaymentOfDebt",
-            "RepaymentOfBorrowings",
-            "Repayment of borrowings"
-        ],
-        "IssuanceOfDebt": [
-            "IssuanceOfDebt",
-            "ProceedsFromBorrowings",
-            "Proceeds from borrowings"
-        ],
-        "RepaymentOfDebt": ["RepaymentOfDebt"],
-        "NetCashFlow": ["NetCashFlow", "ChangesInCash", "Net Cash Flow"]
-    },
-    "normalized_indirect_cf_synonym_map": {
-        "NetIncome": [
-            [
-                "NetIncomeFromContinuingOperations",
-                "ProfitFromOperations",
-                "NetIncome"
-            ]
-        ],
-        "DepreciationAndAmortization": [
-            [
-                "DepreciationAmortizationDepletion",
-                "DepreciationAndAmortization",
-                "Depreciation",
-                "AmortizationCashFlow"
-            ]
-        ],
-        "OtherNonCashAdjustments": [
-            ["StockBasedCompensation"],
-            ["DeferredTax", "DeferredIncomeTax"],
-            ["AssetImpairmentCharge"],
-            ["UnrealizedGainLossOnInvestmentSecurities"],
-            ["GainLossOnInvestmentSecurities", "OperatingGainsLosses"],
-            ["OtherOperatingItems"],
-            ["ProvisionandWriteOffofAssets"],
-            ["OtherNonCashItems"],
-            ["PensionAndEmployeeBenefitExpense"],
-            ["NetForeignCurrencyExchangeGainLoss"],
-            ["GainLossOnSaleOfPPE", "GainLossOnSaleOfPpe"],
-            ["GainLossOnSaleOfBusiness"]
-        ],
-        "ChangeInAccountsReceivable": [
-            [
-                "ChangeInReceivables",
-                "ChangesInAccountReceivables",
-                "Receivables"
-            ]
-        ],
-        "ChangeInInventory": [["ChangeInInventory", "Inventory"]],
-        "ChangeInAccountsPayable": [
-            [
-                "ChangeInAccountPayable",
-                "ChangeInPayable",
-                "ChangeInPayablesAndAccruedExpense",
-                "Payables"
-            ]
-        ],
-        "OtherWorkingCapitalChanges": [
-            ["ChangeInOtherCurrentAssets"],
-            ["ChangeInOtherCurrentLiabilities"],
-            ["ChangeInOtherWorkingCapital", "OtherWcItems"],
-            ["LoansAdvances"]
-        ],
-        "IncomeTaxPaid": [
-            [
-                "TaxesRefundPaid",
-                "IncomeTaxPaid",
-                "IncomeTaxPaidSupplementalData",
-                "DirectTaxes"
-            ]
-        ],
-        "TotalOperatingCashFlow": [
-            [
-                "OperatingCashFlow",
-                "CashFlowFromContinuingOperatingActivities",
-                "CashFromOperatingActivity"
-            ]
-        ],
-        "CapExPurchaseOfPPE": [
-            [
-                "CapitalExpenditure",
-                "PurchaseOfPpe",
-                "NetPPEPurchaseAndSale",
-                "NetPpePurchaseAndSale",
-                "FixedAssetsPurchased"
-            ]
-        ],
-        "PurchaseSaleOfInvestments": [
-            ["PurchaseOfInvestment", "InvestmentsPurchased"],
-            ["SaleOfInvestment", "InvestmentsSold"],
-            [
-                "PurchaseOfBusiness",
-                "AcquisitionOfCompanies",
-                "NetBusinessPurchaseAndSale",
-                "SaleOfBusiness"
-            ],
-            ["FixedAssetsSold"],
-            ["NetInvestmentPurchaseAndSale"],
-            ["RedempNCancOfShares"]
-        ],
-        "OtherInvestingActivities": [
-            ["NetOtherInvestingChanges", "OtherInvestingItems"],
-            ["InterestReceived", "InterestReceivedCFI", "InterestReceivedCfi"],
-            ["DividendsReceived", "DividendsReceivedCfi"],
-            ["InterCorporateDeposits"]
-        ],
-        "TotalInvestingCashFlow": [
-            [
-                "InvestingCashFlow",
-                "CashFlowFromContinuingInvestingActivities",
-                "CashFromInvestingActivity"
-            ]
-        ],
-        "NetDebtIssuedRepaid": [
-            [
-                "IssuanceOfDebt",
-                "LongTermDebtIssuance",
-                "ProceedsFromBorrowings"
-            ],
-            ["ProceedsFromDeposits"],
-            [
-                "RepaymentOfDebt",
-                "LongTermDebtPayments",
-                "RepaymentOfBorrowings"
-            ],
-            ["NetShortTermDebtIssuance", "ShortTermDebtIssuance"],
-            ["ShortTermDebtPayments"]
-        ],
-        "NetStockIssuedRepurchased": [
-            [
-                "IssuanceOfCapitalStock",
-                "CommonStockIssuance",
-                "ProceedsFromShares"
-            ],
-            ["RepurchaseOfCapitalStock", "CommonStockPayments"]
-        ],
-        "DividendsPaid": [
-            ["CashDividendsPaid", "CommonStockDividendPaid", "DividendsPaid"]
-        ],
-        "OtherFinancingActivities": [
-            ["NetOtherFinancingCharges", "OtherFinancingItems"],
-            ["InterestPaidFin", "InterestPaidCFF", "InterestPaidCff"],
-            ["FinancialLiabilities"]
-        ],
-        "TotalFinancingCashFlow": [
-            [
-                "FinancingCashFlow",
-                "CashFlowFromContinuingFinancingActivities",
-                "CashFromFinancingActivity"
-            ]
-        ],
-        "EffectOfExchangeRates": [["EffectOfExchangeRateChanges"]],
-        "NetChangeInCash": [["ChangesInCash", "NetCashFlow"]],
-        "BeginningCash": [["BeginningCashPosition"]],
-        "EndingCash": [["EndCashPosition"]]
-    },
-    "ittelson_indirect_cf_columns": [
-        "NetIncome",
+    "FixedAssetPurchases": [
+      "FixedAssetPurchases",
+      "CapitalExpenditure",
+      "PurchaseOfPPE",
+      "PurchaseOfPpe",
+      "FixedAssetsPurchased"
+    ],
+    "NetBorrowing": [
+      "NetBorrowing",
+      "NetIssuancePaymentsOfDebt",
+      "NetLongTermDebtIssuance"
+    ],
+    "IncomeTaxPaid": [
+      "IncomeTaxPaid",
+      "IncomeTaxPaidSupplementalData",
+      "TaxesRefundPaid",
+      "DirectTaxes"
+    ],
+    "SaleOfStock": [
+      "SaleOfStock",
+      "NetCommonStockIssuance",
+      "IssuanceOfCapitalStock",
+      "CommonStockIssuance",
+      "ProceedsFromShares"
+    ],
+    "EndingCashBalance": ["EndingCashBalance", "EndCashPosition"],
+    "RepaymentOfBorrowings": [
+      "RepaymentOfDebt",
+      "RepaymentOfBorrowings",
+      "Repayment of borrowings"
+    ],
+    "IssuanceOfDebt": [
+      "IssuanceOfDebt",
+      "ProceedsFromBorrowings",
+      "Proceeds from borrowings"
+    ],
+    "RepaymentOfDebt": ["RepaymentOfDebt"],
+    "NetCashFlow": ["NetCashFlow", "ChangesInCash", "Net Cash Flow"]
+  },
+  "normalized_indirect_cf_synonym_map": {
+    "NetIncome": [
+      ["NetIncomeFromContinuingOperations", "ProfitFromOperations", "NetIncome"]
+    ],
+    "DepreciationAndAmortization": [
+      [
+        "DepreciationAmortizationDepletion",
         "DepreciationAndAmortization",
-        "OtherNonCashAdjustments",
-        "ChangeInAccountsReceivable",
-        "ChangeInInventory",
-        "ChangeInAccountsPayable",
-        "OtherWorkingCapitalChanges",
+        "Depreciation",
+        "AmortizationCashFlow"
+      ]
+    ],
+    "OtherNonCashAdjustments": [
+      ["StockBasedCompensation"],
+      ["DeferredTax", "DeferredIncomeTax"],
+      ["AssetImpairmentCharge"],
+      ["UnrealizedGainLossOnInvestmentSecurities"],
+      ["GainLossOnInvestmentSecurities", "OperatingGainsLosses"],
+      ["OtherOperatingItems"],
+      ["ProvisionandWriteOffofAssets"],
+      ["OtherNonCashItems"],
+      ["PensionAndEmployeeBenefitExpense"],
+      ["NetForeignCurrencyExchangeGainLoss"],
+      ["GainLossOnSaleOfPPE", "GainLossOnSaleOfPpe"],
+      ["GainLossOnSaleOfBusiness"]
+    ],
+    "ChangeInAccountsReceivable": [
+      ["ChangeInReceivables", "ChangesInAccountReceivables", "Receivables"]
+    ],
+    "ChangeInInventory": [["ChangeInInventory", "Inventory"]],
+    "ChangeInAccountsPayable": [
+      [
+        "ChangeInAccountPayable",
+        "ChangeInPayable",
+        "ChangeInPayablesAndAccruedExpense",
+        "Payables"
+      ]
+    ],
+    "OtherWorkingCapitalChanges": [
+      ["ChangeInOtherCurrentAssets"],
+      ["ChangeInOtherCurrentLiabilities"],
+      ["ChangeInOtherWorkingCapital", "OtherWcItems"],
+      ["LoansAdvances"]
+    ],
+    "IncomeTaxPaid": [
+      [
+        "TaxesRefundPaid",
         "IncomeTaxPaid",
-        "TotalOperatingCashFlow",
-        "CapExPurchaseOfPPE",
-        "PurchaseSaleOfInvestments",
-        "OtherInvestingActivities",
-        "TotalInvestingCashFlow",
-        "NetDebtIssuedRepaid",
-        "NetStockIssuedRepurchased",
-        "DividendsPaid",
-        "OtherFinancingActivities",
-        "TotalFinancingCashFlow",
-        "EffectOfExchangeRates",
-        "NetChangeInCash",
-        "BeginningCash",
-        "EndingCash"
-    ]
+        "IncomeTaxPaidSupplementalData",
+        "DirectTaxes"
+      ]
+    ],
+    "TotalOperatingCashFlow": [
+      [
+        "OperatingCashFlow",
+        "CashFlowFromContinuingOperatingActivities",
+        "CashFromOperatingActivity"
+      ]
+    ],
+
+    "CapExPurchaseOfPPE": [
+      [
+        "CapitalExpenditure",
+        "PurchaseOfPpe",
+        "FixedAssetsPurchased",
+        "NetPPEPurchaseAndSale",
+        "NetPpePurchaseAndSale"
+      ],
+      ["SaleOfPPE", "SaleOfPpe", "FixedAssetsSold"]
+    ],
+    "PurchaseSaleOfInvestments": [
+      [
+        "PurchaseOfInvestment",
+        "InvestmentsPurchased",
+        "NetInvestmentPurchaseAndSale"
+      ],
+      ["SaleOfInvestment", "InvestmentsSold"],
+      [
+        "PurchaseOfBusiness",
+        "AcquisitionOfCompanies",
+        "NetBusinessPurchaseAndSale"
+      ],
+      ["SaleOfBusiness"],
+      ["PurchaseOfIntangibles", "NetIntangiblesPurchaseAndSale"],
+      ["SaleOfIntangibles"],
+      ["ProceedsFromMaturitiesOfInvestments"],
+      ["RedempNCancOfShares"]
+    ],
+    "OtherInvestingActivities": [
+      ["NetOtherInvestingChanges", "OtherInvestingItems"],
+      ["InterestReceived", "InterestReceivedCFI", "InterestReceivedCfi"],
+      ["DividendsReceived", "DividendsReceivedCfi"],
+      ["InterCorporateDeposits"]
+    ],
+    "TotalInvestingCashFlow": [
+      [
+        "InvestingCashFlow",
+        "CashFlowFromContinuingInvestingActivities",
+        "CashFromInvestingActivity"
+      ]
+    ],
+    "NetDebtIssuedRepaid": [
+      [
+        "IssuanceOfDebt",
+        "LongTermDebtIssuance",
+        "ProceedsFromBorrowings",
+        "NetShortTermDebtIssuance",
+        "ShortTermDebtIssuance"
+      ],
+      ["ProceedsFromDeposits"],
+      [
+        "RepaymentOfDebt",
+        "LongTermDebtPayments",
+        "RepaymentOfBorrowings",
+        "ShortTermDebtPayments"
+      ]
+    ],
+    "NetStockIssuedRepurchased": [
+      [
+        "IssuanceOfCapitalStock",
+        "CommonStockIssuance",
+        "ProceedsFromShares",
+        "NetCommonStockIssuance"
+      ],
+      ["RepurchaseOfCapitalStock", "CommonStockPayments"],
+      ["TaxesPaidRelatedToNetShareSettlementOfEquityAwards"]
+    ],
+    "DividendsPaid": [
+      ["CashDividendsPaid", "CommonStockDividendPaid", "DividendsPaid"]
+    ],
+    "OtherFinancingActivities": [
+      ["NetOtherFinancingCharges", "OtherFinancingItems"],
+      ["InterestPaidFin", "InterestPaidCFF", "InterestPaidCff"],
+      ["FinancialLiabilities"]
+    ],
+    "TotalFinancingCashFlow": [
+      [
+        "FinancingCashFlow",
+        "CashFlowFromContinuingFinancingActivities",
+        "CashFromFinancingActivity"
+      ]
+    ],
+    "EffectOfExchangeRates": [["EffectOfExchangeRateChanges"]],
+    "NetChangeInCash": [["ChangesInCash", "NetCashFlow"]],
+    "BeginningCash": [["BeginningCashPosition"]],
+    "EndingCash": [["EndCashPosition"]]
+  },
+  "ittelson_indirect_cf_columns": [
+    "NetIncome",
+    "DepreciationAndAmortization",
+    "OtherNonCashAdjustments",
+    "ChangeInAccountsReceivable",
+    "ChangeInInventory",
+    "ChangeInAccountsPayable",
+    "OtherWorkingCapitalChanges",
+    "IncomeTaxPaid",
+    "TotalOperatingCashFlow",
+    "CapExPurchaseOfPPE",
+    "PurchaseSaleOfInvestments",
+    "OtherInvestingActivities",
+    "TotalInvestingCashFlow",
+    "NetDebtIssuedRepaid",
+    "NetStockIssuedRepurchased",
+    "DividendsPaid",
+    "OtherFinancingActivities",
+    "TotalFinancingCashFlow",
+    "EffectOfExchangeRates",
+    "NetChangeInCash",
+    "BeginningCash",
+    "EndingCash"
+  ]
 }

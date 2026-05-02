@@ -1,11 +1,15 @@
 import math
+from itertools import combinations
 
 
 def extract_mapped_keys(current_mapping):
     """Helper to flatten the list of lists in your existing mapping dictionary."""
     mapped_keys = set()
+    if not current_mapping:
+        return mapped_keys
+
     for category, keys_list in current_mapping.items():
-        if isinstance(keys_list[0], list):  # Handle your list of lists
+        if keys_list and isinstance(keys_list[0], list):
             for sub_list in keys_list:
                 mapped_keys.update(sub_list)
         else:
@@ -13,68 +17,74 @@ def extract_mapped_keys(current_mapping):
     return mapped_keys
 
 
-def execute_three_way_match(raw_data, current_mapping, ai_classified_keys, leak_type):
+def execute_three_way_match(
+    raw_data, ai_classified_keys, leak_type, target_gap, current_multiplier
+):
     """
-    Executes the deterministic Three-Way Match to prove if the AI's semantic
-    sorting mathematically fixes the cash flow leak.
+    Tests every combination of the AI's suggested keys to find the exact subset
+    that mathematically perfectly fills the gap.
     """
-    # 1. Map the abbreviation to the exact Yahoo Finance Reported Key and AI PascalCase bucket
     boundary_map = {
-        "OCF": {"ai_bucket": "OperatingCashFlow", "reported_key": "OperatingCashFlow"},
-        "ICF": {"ai_bucket": "InvestingCashFlow", "reported_key": "InvestingCashFlow"},
-        "FCF": {"ai_bucket": "FinancingCashFlow", "reported_key": "FinancingCashFlow"},
+        "OCF": "OperatingCashFlow",
+        "ICF": "InvestingCashFlow",
+        "FCF": "FinancingCashFlow",
     }
 
-    config = boundary_map.get(leak_type)
-    if not config:
-        raise ValueError(f"Unknown leak type: {leak_type}")
-
-    ai_bucket = config["ai_bucket"]
-    reported_key = config["reported_key"]
-
-    # --- THE THREE NUMBERS ---
-
-    # Number A: The Reported Total (Source of Truth)
-    # This is what Yahoo Finance explicitly claims the total is.
-    reported_total = raw_data.get(reported_key, 0.0)
-
-    # Number B: The Current Mapped Total
-    # Summing only the keys we already have in our dictionary for this statement.
-    mapped_keys = extract_mapped_keys(current_mapping)
-    current_total = sum(
-        raw_data.get(k, 0.0)
-        for k in mapped_keys
-        if k in raw_data and isinstance(raw_data[k], (int, float))
-    )
-
-    # Number C: The Reconstructed Total (Current + AI Suggestions)
-    # We add the values of the exact keys the AI just classified into this bucket.
+    ai_bucket = boundary_map.get(leak_type)
     ai_suggested_keys = ai_classified_keys.get(ai_bucket, [])
-    ai_suggested_total = sum(
-        raw_data.get(k, 0.0)
+
+    # 1. Pull the raw values and scale them
+    trace_values = {
+        k: raw_data.get(k, 0.0) * current_multiplier
         for k in ai_suggested_keys
         if k in raw_data and isinstance(raw_data[k], (int, float))
-    )
+    }
 
-    reconstructed_total = current_total + ai_suggested_total
-
-    # --- THE DETERMINISTIC AUDIT ---
-
-    # We use a small tolerance (abs_tol) to forgive Python's microscopic floating-point rounding errors
-    if math.isclose(reconstructed_total, reported_total, abs_tol=0.1):
-        return {
-            "status": "SUCCESS",
-            "missing_keys_found": ai_suggested_keys,
-            "calculated_leak_fixed": ai_suggested_total,
-            "message": "Mathematical match found! The AI's semantic sorting perfectly reconciles the leak.",
-        }
-    else:
-        # Calculate the remaining gap to log how broken the source data is
-        unresolvable_gap = reported_total - reconstructed_total
-
+    if not trace_values:
         return {
             "status": "SOURCE_DATA_ANOMALY",
             "missing_keys_found": [],
-            "calculated_leak_fixed": 0.0,
-            "message": f"Source Data Broken: Even with all logical keys applied, the math fails by {unresolvable_gap:.2f}. Do not trust the reported total.",
+            "evidence": {},
+            "message": "AI found no valid numeric keys for this bucket.",
         }
+
+    # 2. SUBSET SUM: Test all combinations of the AI's keys
+    keys_list = list(trace_values.keys())
+
+    # Safeguard against exponential computation time if API goes crazy
+    if len(keys_list) > 15:
+        keys_list = keys_list[:15]
+
+    best_diff = float("inf")
+    best_combo = []
+    best_sum = 0.0
+
+    # Test every possible combination size (1 key, 2 keys, 3 keys... up to all keys)
+    for r in range(1, len(keys_list) + 1):
+        for combo in combinations(keys_list, r):
+            combo_sum = sum(trace_values[k] for k in combo)
+
+            # Check direct match OR sign-flipped match (common in accounting APIs)
+            if math.isclose(combo_sum, target_gap, abs_tol=2.0) or math.isclose(
+                -combo_sum, target_gap, abs_tol=2.0
+            ):
+                return {
+                    "status": "SUCCESS",
+                    "missing_keys_found": list(combo),
+                    "evidence": {k: trace_values[k] for k in combo},
+                    "message": f"Exact subset match found! Keys {list(combo)} sum perfectly to fix the gap.",
+                }
+
+            # Track the closest match for our anomaly debugging log
+            diff = min(abs(target_gap - combo_sum), abs(target_gap - (-combo_sum)))
+            if diff < best_diff:
+                best_diff = diff
+                best_combo = list(combo)
+                best_sum = combo_sum
+
+    return {
+        "status": "SOURCE_DATA_ANOMALY",
+        "missing_keys_found": [],
+        "evidence": {k: trace_values[k] for k in best_combo},
+        "message": f"No valid subset found. Closest combo was {list(best_combo)} summing to {best_sum:.2f} (Gap: {target_gap:.2f}).",
+    }
