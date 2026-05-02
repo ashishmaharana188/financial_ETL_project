@@ -6,5 +6,5 @@ urllib3
 beautifulsoup4
 SQLAlchemy
 psycopg2-binary
-google-generativeai
+google-genai
 python-dotenv

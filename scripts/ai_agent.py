@@ -3,20 +3,16 @@ import json
 import uuid
 import os
 from datetime import datetime
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
-import google.generativeai as genai
 from sqlalchemy import insert
 from scripts.database import engine, ai_forensic_logs
 
 load_dotenv()
 
-api_key = os.getenv("GEMINI_API_KEY")
 
-if not api_key:
-    raise ValueError("CRITICAL: GEMINI_API_KEY not found in .env file.")
-
-genai.configure(api_key=api_key)
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 
 def build_forensic_prompt(
@@ -54,18 +50,36 @@ def trigger_ai_forensic_audit(
     ticker, leak_type, leak_amount, raw_data_snippet, current_mapping
 ):
     try:
+
+        safe_leak_amount = float(leak_amount)
         # 1. Build and Fire the Prompt
         prompt = build_forensic_prompt(
-            ticker, leak_type, leak_amount, raw_data_snippet, current_mapping
+            ticker,
+            leak_type,
+            safe_leak_amount,
+            raw_data_snippet,
+            current_mapping,
         )
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model="gemini-3.1-flash-lite-preview",
+            contents=prompt,
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
+        )
 
-        # 2. Parse the JSON (cleaning any potential markdown blocks the AI sneaks in)
-        clean_json = response.text.replace("```json", "").replace("```", "").strip()
-        ai_result = json.loads(clean_json)
+        # raw_text = response.text
+        # clean_json = raw_text.strip()
+        # if clean_json.startswith("```"):
 
-        # 3. Save the Ticket to PostgreSQL
+        #    lines = clean_json.splitlines()
+        #    if lines[0].startswith("```"):
+        #        lines = lines[1:]
+        #    if lines[-1].startswith("```"):
+        #        lines = lines[:-1]
+        #    clean_json = "\n".join(lines).strip()
+
+        ai_result = json.loads(response.text)
+
+        # Save the Ticket to PostgreSQL
         ticket_id = f"{ticker}-{leak_type}-{uuid.uuid4().hex[:6]}"
 
         with engine.begin() as conn:
@@ -74,7 +88,7 @@ def trigger_ai_forensic_audit(
                 Timestamp=datetime.now().date(),
                 Ticker=ticker,
                 LeakType=leak_type,
-                LeakAmount=leak_amount,
+                LeakAmount=safe_leak_amount,
                 MissingKeyFound=ai_result.get("Missing_Key_Found", "UNKNOWN"),
                 SuggestedCategory=ai_result.get("Suggested_Category", "UNKNOWN"),
                 Reasoning=ai_result.get("Reasoning", "No reasoning provided"),
@@ -82,9 +96,11 @@ def trigger_ai_forensic_audit(
             )
             conn.execute(stmt)
 
-        print(
-            f"   [AI AGENT] Logged ticket {ticket_id} for {ticker} ({leak_type}). Pending human review."
-        )
+        print(f"   [AI AGENT] Logged ticket {ticket_id} for {ticker} ({leak_type}).")
 
+    except json.JSONDecodeError as je:
+        print(
+            f"   [AI AGENT] JSON Parse Error: {je}. Raw output was: {response.text[:100]}..."
+        )
     except Exception as e:
         print(f"   [AI AGENT] Failed to generate or save forensic audit: {e}")
