@@ -1,135 +1,118 @@
 import streamlit as st
 import pandas as pd
 import json
-from pathlib import Path
 from sqlalchemy import text
+from datetime import datetime
+
+# Import your database engine (adjust the import path if your engine is named differently)
 from scripts.database import engine
 
-# CONFIGURATION
-st.set_page_config(layout="wide", page_title="AI Forensic Dashboard")
-BASE_DIR = Path(__file__).resolve().parent
-config_file_path = BASE_DIR / "mapping_config.json"
+
+def approve_ai_suggestion(
+    ticket_id,
+    bucket_name,
+    new_keys,
+    target_index=None,
+    config_path="mapping_config.json",
+):
+    """
+    Injects the AI's mathematically verified keys into the JSON config.
+    """
+    try:
+        # 1. Load the current config
+        with open(config_path, "r") as f:
+            config = json.load(f)
+
+        # 2. Convert the database string back into a Python list
+        keys_to_add = json.loads(new_keys) if isinstance(new_keys, str) else new_keys
+        target_map = config["normalized_indirect_cf_synonym_map"]
+
+        if bucket_name in target_map:
+            # 3. Inject the keys
+            if target_index is not None and target_index != "Create New Group":
+                # Append to a specific existing sub-array
+                target_map[bucket_name][int(target_index)].extend(keys_to_add)
+            else:
+                # Create a brand new sub-array
+                target_map[bucket_name].append(keys_to_add)
+
+            # 4. Save the updated config back to disk
+            with open(config_path, "w") as f:
+                json.dump(config, f, indent=4)
+
+            # 5. Close the loop: Mark the database ticket as APPROVED
+            with engine.connect() as conn:
+                conn.execute(
+                    text(
+                        'UPDATE ai_forensic_logs SET "Status" = \'APPROVED\' WHERE "TicketID" = :tid'
+                    ),
+                    {"tid": ticket_id},
+                )
+                conn.commit()
+            return True, f"Successfully updated {bucket_name}"
+        else:
+            return False, f"Bucket {bucket_name} not found."
+
+    except Exception as e:
+        return False, str(e)
 
 
-#  HELPER FUNCTIONS
-def load_logs():
-    """Fetches the latest tickets from PostgreSQL"""
-    query = 'SELECT * FROM ai_forensic_logs ORDER BY "Timestamp" DESC'
-    return pd.read_sql(query, engine)
+# --- STREAMLIT UI ---
+
+st.title("AI Forensic Approval Queue")
 
 
-def load_dictionary():
-    """Loads the current mapping rules"""
-    with open(config_file_path, "r") as f:
+# Helper to load config for the dropdowns
+def load_config():
+    with open("mapping_config.json", "r") as f:
         return json.load(f)
 
 
-def update_dictionary(category, new_key):
-    """Safely writes a new key to the JSON dictionary"""
-    config = load_dictionary()
-
-    # Search all major dictionaries to find the target category
-    updated = False
-    for dict_name in [
-        "ittelson_income_statement_columns",
-        "ittelson_balance_sheet_columns",
-        "indirect_cash_flow_columns",
-    ]:
-        if category in config.get(dict_name, {}):
-            if new_key not in config[dict_name][category]:
-                config[dict_name][category].append(new_key)
-                updated = True
-            break
-
-    if updated:
-        with open(config_file_path, "w") as f:
-            json.dump(config, f, indent=4)
-        return True
-    return False
-
-
-def resolve_ticket(ticket_id):
-    """Marks a ticket as RESOLVED in the database"""
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                'UPDATE ai_forensic_logs SET "Status" = \'RESOLVED\' WHERE "TicketID" = :tid'
-            ),
-            {"tid": ticket_id},
-        )
-
-
-# UI: THE TICKET DASHBOARD
-st.title("🕵️‍♂️ AI Forensic Accounting Dashboard")
-st.markdown(
-    "Review unmapped accounting lines detected by the ETL pipeline and add them to the global dictionary."
+# Fetch pending tickets from your database
+pending_logs = pd.read_sql(
+    "SELECT * FROM ai_forensic_logs WHERE \"Status\" = 'PENDING'", engine
 )
+config = load_config()
 
-logs_df = load_logs()
+if not pending_logs.empty:
+    for _, row in pending_logs.iterrows():
+        with st.expander(f"Ticket: {row['Ticker']} - {row['LeakType']}"):
+            st.write(f"**Leak Amount:** {row['LeakAmount']}")
+            st.write(f"**Suggested Category:** `{row['SuggestedCategory']}`")
+            st.write(f"**Keys to Add:** `{row['MissingKeyFound']}`")
+            st.info(f"Reasoning: {row['Reasoning']}")
 
-if logs_df.empty:
-    st.success("No leaks detected! The dictionary is perfectly mapped.")
-else:
-    # Separate pending and resolved
-    pending_df = logs_df[logs_df["Status"] == "PENDING"]
-    resolved_df = logs_df[logs_df["Status"] == "RESOLVED"]
-
-    st.subheader(f"Pending Audits ({len(pending_df)})")
-    st.dataframe(
-        pending_df[
-            [
-                "Timestamp",
-                "Ticker",
-                "LeakType",
-                "LeakAmount",
-                "MissingKeyFound",
-                "SuggestedCategory",
-                "Reasoning",
-            ]
-        ],
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    # UI: THE DICTIONARY MANAGER
-    st.divider()
-    st.subheader("Update Global Dictionary")
-
-    if not pending_df.empty:
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            # Dropdown populated by the AI's findings
-            selected_ticket = st.selectbox(
-                "Select a Ticket to Resolve:", pending_df["TicketID"].tolist()
+            # Get the existing sub-arrays for this category to populate the dropdown
+            category = row["SuggestedCategory"]
+            existing_groups = config["normalized_indirect_cf_synonym_map"].get(
+                category, []
             )
 
-            if selected_ticket:
-                ticket_data = pending_df[
-                    pending_df["TicketID"] == selected_ticket
-                ].iloc[0]
-                target_key = ticket_data["MissingKeyFound"]
-                suggested_cat = ticket_data["SuggestedCategory"]
+            # Create a list of options for the user
+            options = ["Create New Group"]
+            for i, group in enumerate(existing_groups):
+                options.append(f"Append to Group {i}: {group}")
 
-        with col2:
-            st.text_input("Discovered Line Item (Key)", value=target_key, disabled=True)
-
-        with col3:
-            # Allow the user to override the AI's category suggestion if needed
-            final_category = st.text_input(
-                "Target Dictionary Category", value=suggested_cat
+            # The dropdown selection
+            selected_option = st.selectbox(
+                "Where should this key go?", options, key=f"select_{row['TicketID']}"
             )
 
-        if st.button("Approve & Update Dictionary", type="primary"):
-            if update_dictionary(final_category, target_key):
-                resolve_ticket(selected_ticket)
-                st.success(f"Added '{target_key}' to '{final_category}'!")
-                st.rerun()  # Refresh the UI state
-            else:
-                st.error(
-                    f"Category '{final_category}' not found in mapping_config.json. Please check spelling."
+            if st.button("Approve & Inject", key=f"btn_{row['TicketID']}"):
+                # Figure out the index based on the selection
+                target_index = (
+                    None
+                    if selected_option == "Create New Group"
+                    else options.index(selected_option) - 1
                 )
 
-    # RESOLVED LOGS
-    with st.expander("View Resolved Tickets"):
-        st.dataframe(resolved_df, use_container_width=True)
+                success, msg = approve_ai_suggestion(
+                    row["TicketID"], category, row["MissingKeyFound"], target_index
+                )
+                if success:
+                    st.success(msg)
+                    st.rerun()  # Refreshes the UI to clear the approved ticket
+                else:
+                    st.error(msg)
+else:
+    st.write("No pending AI suggestions. Everything is balanced!")

@@ -52,7 +52,7 @@ def trigger_semantic_router(ticker, unmapped_keys):
         prompt = build_semantic_prompt(ticker, unmapped_keys)
 
         response = client.models.generate_content(
-            model="gemini-3.1-flash-lite-preview",
+            model="gemini-2.5-flash-lite",
             contents=prompt,
             config=types.GenerateContentConfig(response_mime_type="application/json"),
         )

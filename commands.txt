@@ -1,3 +1,3 @@
 source venv/Scripts/activate
-pip install -r requirements.txt
 python -m scripts.statementScrape
+pip install -r requirements.txt

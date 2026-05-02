@@ -15,6 +15,7 @@ from scripts.database import engine
 from scripts.ai_agent import trigger_semantic_router
 from scripts.reconciliation import extract_mapped_keys, execute_three_way_match
 from scripts.ai_agent import trigger_semantic_router
+from sqlalchemy import text
 
 # vantage api key
 API_KEY = "V6FLFA1K7ECKP0RK"
@@ -977,13 +978,6 @@ def validate_financial_statements(
     bs_mapping=None,
     cf_mapping=None,
 ):
-    import pandas as pd
-    import numpy as np
-    from sqlalchemy import text
-    import json
-    import uuid
-    from datetime import datetime
-
     print("RUNNING 3-STATEMENT VALIDATION")
 
     # Set indices for alignment
@@ -1135,8 +1129,6 @@ def validate_financial_statements(
                                 else "Unknown"
                             )
 
-                            # FIX: Convert NumPy float64 to standard Python float using float()
-                            # FIX: Ensure missing_keys is a clean list of strings
                             clean_gap = float(current_gap)
                             clean_keys = [str(k) for k in res["missing_keys_found"]]
 

@@ -7,6 +7,7 @@ from sqlalchemy import (
     MetaData,
     Table,
     Boolean,
+    text,
 )
 
 # Setup Engine
