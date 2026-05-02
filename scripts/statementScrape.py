@@ -12,7 +12,8 @@ import yfinance as yf
 from bs4 import BeautifulSoup
 from sqlalchemy.dialects.postgresql import insert
 from scripts.database import engine
-from scripts.ai_agent import trigger_ai_forensic_audit
+from scripts.ai_agent import trigger_semantic_router
+from scripts.reconciliation import execute_three_way_match
 
 # vantage api key
 API_KEY = "V6FLFA1K7ECKP0RK"
@@ -1000,13 +1001,13 @@ def validate_financial_statements(
                     if (raw_df_bs is not None and date_str in raw_df_bs.index)
                     else {}
                 )
-                trigger_ai_forensic_audit(
-                    ticker,
-                    "Balance Sheet (Assets vs L+E)",
-                    bs_gap[date],
-                    raw_snippet,
-                    bs_mapping,
-                )
+                # trigger_ai_forensic_audit(
+                #    ticker,
+                #    "Balance Sheet (Assets vs L+E)",
+                #    bs_gap[date],
+                #    raw_snippet,
+                #    bs_mapping,
+                # )
 
     # INCOME STATEMENT
     is_calc = df_is["GrossProfit"] - df_is["OperatingExpense"]
@@ -1032,13 +1033,13 @@ def validate_financial_statements(
                     if (raw_df_is is not None and date_str in raw_df_is.index)
                     else {}
                 )
-                trigger_ai_forensic_audit(
-                    ticker,
-                    "Income Statement (GP-Opex vs OpInc)",
-                    is_gap[date],
-                    raw_snippet,
-                    is_mapping,
-                )
+                # trigger_ai_forensic_audit(
+                #    ticker,
+                #    "Income Statement (GP-Opex vs OpInc)",
+                #    is_gap[date],
+                #    raw_snippet,
+                #    is_mapping,
+                # )
 
     # BALANCE SHEET TO CASH FLOW LINK
     common_bs_cf = df_cf.index.intersection(df_bs.index)
@@ -1208,32 +1209,75 @@ def validate_financial_statements(
                 else {}
             )
 
-            if abs(gap_ocf[date]) > 5:
-                df_indirect_cf.at[date, "Unmapped_Operating"] = gap_ocf[date]
-                print(
-                    f"   -> [{date}] OCF Leak: Plugging {gap_ocf[date]:.2f} into Unmapped_Operating"
-                )
-                trigger_ai_forensic_audit(
-                    ticker, "OCF", gap_ocf[date], raw_cf_snippet, cf_mapping
+            # --- HYBRID ENGINE WIRING ---
+            ocf_leak = abs(gap_ocf[date]) > 5
+            icf_leak = abs(gap_icf[date]) > 5
+            fcf_leak = abs(gap_fcf[date]) > 5
+
+            # Only trigger the engine if a leak exists
+            if ocf_leak or icf_leak or fcf_leak:
+                from scripts.reconciliation import (
+                    extract_mapped_keys,
+                    execute_three_way_match,
                 )
 
-            if abs(gap_icf[date]) > 5:
-                df_indirect_cf.at[date, "Unmapped_Investing"] = gap_icf[date]
-                print(
-                    f"   -> [{date}] ICF Leak: Plugging {gap_icf[date]:.2f} into Unmapped_Investing"
-                )
-                trigger_ai_forensic_audit(
-                    ticker, "ICF", gap_icf[date], raw_cf_snippet, cf_mapping
-                )
+                # 1. Find all leftover unmapped keys for this date
+                existing_keys = extract_mapped_keys(cf_mapping)
+                unmapped_keys = [
+                    k
+                    for k, v in raw_cf_snippet.items()
+                    if k not in existing_keys and isinstance(v, (int, float))
+                ]
 
-            if abs(gap_fcf[date]) > 5:
-                df_indirect_cf.at[date, "Unmapped_Financing"] = gap_fcf[date]
-                print(
-                    f"   -> [{date}] FCF Leak: Plugging {gap_fcf[date]:.2f} into Unmapped_Financing"
-                )
-                trigger_ai_forensic_audit(
-                    ticker, "FCF", gap_fcf[date], raw_cf_snippet, cf_mapping
-                )
+                # 2. ONE Semantic Pass for the whole statement
+                ai_sorted_json = None
+                if unmapped_keys:
+                    ai_sorted_json = trigger_semantic_router(ticker, unmapped_keys)
+
+                # 3. OCF Deterministic Audit
+                if ocf_leak:
+                    df_indirect_cf.at[date, "Unmapped_Operating"] = gap_ocf[date]
+                    print(
+                        f"   -> [{date}] OCF Leak: Plugging {gap_ocf[date]:.2f} into Unmapped_Operating"
+                    )
+                    if ai_sorted_json:
+                        res = execute_three_way_match(
+                            raw_cf_snippet, cf_mapping, ai_sorted_json, "OCF"
+                        )
+                        print(
+                            f"      [HYBRID MATCH] OCF Status: {res['status']} | Msg: {res['message']}"
+                        )
+                        # NOTE: Add your SQLAlchemy database insert code here using 'res'
+
+                # 4. ICF Deterministic Audit
+                if icf_leak:
+                    df_indirect_cf.at[date, "Unmapped_Investing"] = gap_icf[date]
+                    print(
+                        f"   -> [{date}] ICF Leak: Plugging {gap_icf[date]:.2f} into Unmapped_Investing"
+                    )
+                    if ai_sorted_json:
+                        res = execute_three_way_match(
+                            raw_cf_snippet, cf_mapping, ai_sorted_json, "ICF"
+                        )
+                        print(
+                            f"      [HYBRID MATCH] ICF Status: {res['status']} | Msg: {res['message']}"
+                        )
+                        # NOTE: Add your SQLAlchemy database insert code here using 'res'
+
+                # 5. FCF Deterministic Audit
+                if fcf_leak:
+                    df_indirect_cf.at[date, "Unmapped_Financing"] = gap_fcf[date]
+                    print(
+                        f"   -> [{date}] FCF Leak: Plugging {gap_fcf[date]:.2f} into Unmapped_Financing"
+                    )
+                    if ai_sorted_json:
+                        res = execute_three_way_match(
+                            raw_cf_snippet, cf_mapping, ai_sorted_json, "FCF"
+                        )
+                        print(
+                            f"      [HYBRID MATCH] FCF Status: {res['status']} | Msg: {res['message']}"
+                        )
+                        # NOTE: Add your SQLAlchemy database insert code here using 'res'
 
         # Calculate final section totals including the new plugs
         calc_ocf_final = calc_ocf_base + df_indirect_cf["Unmapped_Operating"]

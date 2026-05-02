@@ -1,106 +1,75 @@
-# ai_agent.py
 import json
-import uuid
 import os
-from datetime import datetime
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
-from sqlalchemy import insert
-from scripts.database import engine, ai_forensic_logs
 
 load_dotenv()
-
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 
-def build_forensic_prompt(
-    ticker, leak_type, leak_amount, raw_data_snippet, current_mapping
-):
+def build_semantic_prompt(ticker, unmapped_keys):
     prompt = f"""
-    You are an expert Forensic Accounting AI. An automated ETL pipeline has detected a missing accounting line item leak.
+    You are an Expert Forensic Accounting AI acting as a Semantic Router.
     
     TICKER: {ticker}
-    STATEMENT AND LEAK TYPE: {leak_type}
-    LEAK AMOUNT: {leak_amount}
     
-    RAW FINANCIAL STATEMENT DATA FOR THIS PERIOD:
-    {json.dumps(raw_data_snippet, indent=2)}
-    
-    CURRENT DICTIONARY MAPPING FOR THIS SECTION:
-    {json.dumps(current_mapping, indent=2)}
+    UNMAPPED RAW KEYS:
+    {json.dumps(unmapped_keys, indent=2)}
     
     YOUR MISSION:
-    Find the exact string key in the RAW DATA that perfectly matches the LEAK AMOUNT. 
-    It is likely missing from the CURRENT DICTIONARY MAPPING.
+    Do not perform any math. Your only job is to semantically classify every single key provided in the UNMAPPED RAW KEYS list into its correct Cash Flow accounting boundary.
+    
+    ACCOUNTING BOUNDARIES (Use these exact PascalCase names as your JSON keys):
+    - OperatingCashFlow: (Net Income adjustments, Non-Cash Items like Depreciation/Amortization, Working Capital changes).
+    - InvestingCashFlow: (CapEx, Purchase/Sale of Investments, Interest/Dividends Received).
+    - FinancingCashFlow: (Debt issuance/repayment, Equity issuance/buybacks, Dividends Paid).
+    - Anomaly: (Keys that clearly do not belong on a cash flow statement, or obvious data errors).
+    
+    CRITICAL RULE: 
+    You MUST preserve the exact spelling, spacing, and casing of the original raw keys. Do not format the raw keys themselves, or the downstream Python pipeline will crash.
     
     OUTPUT FORMAT:
-    Respond ONLY in strict, parsable JSON matching this exact schema, with no markdown formatting or conversational text:
+    Respond ONLY in strict, parsable JSON matching this exact schema. Every key from the input must be placed into one of these four arrays:
     {{
-        "Missing_Key_Found": "The exact string found in the raw data",
-        "Suggested_Category": "The dictionary category it should belong to",
-        "Reasoning": "A brief, 1-sentence explanation"
+        "OperatingCashFlow": ["ExactRawKey1", "ExactRawKey2"],
+        "InvestingCashFlow": ["ExactRawKey3"],
+        "FinancingCashFlow": [],
+        "Anomaly": ["ExactRawKey4"]
     }}
     """
     return prompt
 
 
-def trigger_ai_forensic_audit(
-    ticker, leak_type, leak_amount, raw_data_snippet, current_mapping
-):
+def trigger_semantic_router(ticker, unmapped_keys):
+    """
+    Takes the unmapped keys, asks Gemini to sort them, and returns the JSON dictionary.
+    No math, no database logging. Just pure semantic classification.
+    """
     try:
-
-        safe_leak_amount = float(leak_amount)
         # 1. Build and Fire the Prompt
-        prompt = build_forensic_prompt(
-            ticker,
-            leak_type,
-            safe_leak_amount,
-            raw_data_snippet,
-            current_mapping,
-        )
+        prompt = build_semantic_prompt(ticker, unmapped_keys)
+
         response = client.models.generate_content(
             model="gemini-3.1-flash-lite-preview",
             contents=prompt,
             config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
 
-        # raw_text = response.text
-        # clean_json = raw_text.strip()
-        # if clean_json.startswith("```"):
-
-        #    lines = clean_json.splitlines()
-        #    if lines[0].startswith("```"):
-        #        lines = lines[1:]
-        #    if lines[-1].startswith("```"):
-        #        lines = lines[:-1]
-        #    clean_json = "\n".join(lines).strip()
-
+        # 2. Parse and return the JSON directly back to the pipeline
         ai_result = json.loads(response.text)
+        print(
+            f"   [AI AGENT] Successfully routed {len(unmapped_keys)} keys for {ticker}."
+        )
 
-        # Save the Ticket to PostgreSQL
-        ticket_id = f"{ticker}-{leak_type}-{uuid.uuid4().hex[:6]}"
-
-        with engine.begin() as conn:
-            stmt = insert(ai_forensic_logs).values(
-                TicketID=ticket_id,
-                Timestamp=datetime.now().date(),
-                Ticker=ticker,
-                LeakType=leak_type,
-                LeakAmount=safe_leak_amount,
-                MissingKeyFound=ai_result.get("Missing_Key_Found", "UNKNOWN"),
-                SuggestedCategory=ai_result.get("Suggested_Category", "UNKNOWN"),
-                Reasoning=ai_result.get("Reasoning", "No reasoning provided"),
-                Status="PENDING",
-            )
-            conn.execute(stmt)
-
-        print(f"   [AI AGENT] Logged ticket {ticket_id} for {ticker} ({leak_type}).")
+        return ai_result
 
     except json.JSONDecodeError as je:
         print(
             f"   [AI AGENT] JSON Parse Error: {je}. Raw output was: {response.text[:100]}..."
         )
+        return None
     except Exception as e:
-        print(f"   [AI AGENT] Failed to generate or save forensic audit: {e}")
+        print(f"   [AI AGENT] Semantic Routing failed: {e}")
+        return None
