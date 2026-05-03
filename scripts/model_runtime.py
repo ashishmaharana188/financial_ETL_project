@@ -1,6 +1,7 @@
 import json
 import requests
 import math
+import re
 
 
 class PureOllamaRuntime:
@@ -15,11 +16,7 @@ class PureOllamaRuntime:
 
     def get_embedding(self, text):
         """Fetches a vector embedding from Ollama."""
-        payload = {
-            "model": "bge-m3",
-            "prompt": text,
-            "keep_alive": "5m",  # Keeps BGE-M3 hot in VRAM
-        }
+        payload = {"model": "bge-m3", "prompt": text, "keep_alive": "5m"}
         response = requests.post(self.embed_url, json=payload)
         response.raise_for_status()
         return response.json()["embedding"]
@@ -48,7 +45,6 @@ class PureOllamaRuntime:
             config.get("normalized_indirect_cf_synonym_map", {}).keys()
         )
 
-        # Vectorize each bucket name once at startup
         for name in self.dictionary_names:
             vector = self.get_embedding(name)
             self.dictionary_vectors.append(vector)
@@ -58,10 +54,8 @@ class PureOllamaRuntime:
 
     def find_nearest_buckets(self, unmapped_key, top_k=8):
         """Instantly compares a new key against the pre-computed dictionary."""
-        # 1. Vectorize just the single missing key via Ollama
         key_vector = self.get_embedding(unmapped_key)
 
-        # 2. Compare against cached dictionary vectors
         similarities = []
         for i, dict_vec in enumerate(self.dictionary_vectors):
             score = self._cosine_similarity(key_vector, dict_vec)
@@ -71,21 +65,23 @@ class PureOllamaRuntime:
         return [match[0] for match in similarities[:top_k]]
 
     def process_with_phi3(self, unmapped_key, candidate_buckets):
-        """Passes the top candidates to Ollama and fuzzy-matches the result."""
+        """Passes the top candidates to Ollama with few-shot prompting and robust regex parsing."""
         print(f"      [OLLAMA] Classifying: '{unmapped_key}'...")
 
+        # We explicitly give the tiny model an example to copy
         prompt = f"""<|system|>
-You are an expert accounting data engineer. Your job is to map unmapped keys to the provided accounting buckets.
-Respond ONLY with a valid JSON object. Format: {{"Category": "The selected bucket name"}}<|end|>
+You are a strict accounting data router. You MUST choose EXACTLY ONE item from the Candidate Buckets list that best matches the Unmapped Key.
+RULE 1: NEVER invent a new bucket name.
+RULE 2: NEVER repeat the Unmapped Key back to me.
+RULE 3: Your answer MUST be copied exactly from the provided Candidate Buckets list.
+Respond ONLY with a JSON object. Example: {{"Category": "ExactNameFromList"}}<|end|>
 <|user|>
 Unmapped Key: "{unmapped_key}"
 Candidate Buckets: {candidate_buckets}<|end|>
 <|assistant|>"""
-
         payload = {
             "model": "phi3:mini",
             "prompt": prompt,
-            "format": "json",
             "stream": False,
             "keep_alive": "5m",
             "options": {"temperature": 0.0, "num_ctx": 2048},
@@ -95,15 +91,30 @@ Candidate Buckets: {candidate_buckets}<|end|>
             response = requests.post(self.generate_url, json=payload)
             response.raise_for_status()
 
-            result_json = json.loads(response.json()["response"])
+            raw_text = response.json().get("response", "")
+
+            # Robust Regex to extract JSON even if the AI surrounds it with markdown backticks
+            json_match = re.search(r"\{.*?\}", raw_text, re.DOTALL)
+            if not json_match:
+                print(
+                    f"      [WARNING] Ollama failed to return JSON. Raw output: {raw_text}"
+                )
+                return None
+
+            result_json = json.loads(json_match.group(0))
             selected_category = str(result_json.get("Category", "")).strip()
 
-            # 1. Try Exact Match First
+            # Guard against the AI returning empty strings
+            if not selected_category or selected_category.lower() == "none":
+                print(f"      [WARNING] Ollama returned empty category.")
+                return None
+
+            # 1. Exact Match
             if selected_category in candidate_buckets:
                 print(f"      [OLLAMA] Selected: {selected_category}")
                 return {selected_category: [unmapped_key]}
 
-            # 2. Try Fuzzy Match (Lowercased and spaces removed)
+            # 2. Fuzzy Match
             clean_selected = selected_category.replace(" ", "").lower()
             for bucket in candidate_buckets:
                 clean_bucket = bucket.replace(" ", "").lower()
@@ -113,9 +124,8 @@ Candidate Buckets: {candidate_buckets}<|end|>
                     )
                     return {bucket: [unmapped_key]}
 
-            # 3. If it completely failed, tell us exactly what it said
             print(
-                f"      [WARNING] Ollama Hallucinated/Failed: '{selected_category}' (Not in candidates)"
+                f"      [WARNING] Ollama Hallucinated: '{selected_category}' (Not in candidates)"
             )
             return None
 
@@ -130,7 +140,6 @@ Candidate Buckets: {candidate_buckets}<|end|>
         print("\n[AI ENGINE] Batch complete. Purging Ollama VRAM...")
 
         try:
-            # Sending keep_alive: 0 instantly unloads the models
             requests.post(self.embed_url, json={"model": "bge-m3", "keep_alive": 0})
             requests.post(
                 self.generate_url, json={"model": "phi3:mini", "keep_alive": 0}
