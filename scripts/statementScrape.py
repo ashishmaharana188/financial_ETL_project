@@ -984,6 +984,7 @@ def validate_financial_statements(
     is_mapping=None,
     bs_mapping=None,
     cf_mapping=None,
+    ai_mode="local",
 ):
     print("RUNNING 3-STATEMENT VALIDATION")
 
@@ -1107,111 +1108,105 @@ def validate_financial_statements(
                         if k not in existing_keys and isinstance(v, (int, float))
                     ]
 
-                    if unmapped_keys:
-                        print(
-                            f"    [AI PIPELINE] Processing {len(unmapped_keys)} keys via Ollama for {ticker}..."
+            if unmapped_keys:
+                print(
+                    f"    [AI PIPELINE] Processing {len(unmapped_keys)} keys via {ai_mode.upper()} for {ticker}..."
+                )
+                ai_sorted_json = {}
+
+                if ai_mode == "cloud":
+                    # Use Gemini (processes all keys at once)
+                    ai_sorted_json = trigger_semantic_router(ticker, unmapped_keys)
+                    if not ai_sorted_json:
+                        ai_sorted_json = {}  # Fallback if cloud fails
+                else:
+                    # Use Local Ollama (processes key-by-key with cache)
+                    for key in unmapped_keys:
+                        if key in local_ai_cache:
+                            cached_bucket = local_ai_cache[key]
+                            if cached_bucket:
+                                if cached_bucket not in ai_sorted_json:
+                                    ai_sorted_json[cached_bucket] = []
+                                ai_sorted_json[cached_bucket].append(key)
+                        else:
+                            top_candidates = runtime.find_nearest_buckets(key)
+                            if top_candidates:
+                                result = runtime.process_with_phi3(key, top_candidates)
+                                if result:
+                                    for bucket, k_list in result.items():
+                                        local_ai_cache[key] = bucket
+                                        if bucket not in ai_sorted_json:
+                                            ai_sorted_json[bucket] = []
+                                        ai_sorted_json[bucket].extend(k_list)
+                                else:
+                                    local_ai_cache[key] = None
+                # Proceed with gap verification if AI successfully mapped keys
+                if ai_sorted_json:
+                    raw_ocf = raw_cf_snippet.get(
+                        "OperatingCashFlow",
+                        raw_cf_snippet.get("operatingCashflow", 1),
+                    )
+                    scaled_ocf = df_indirect_cf.at[date, "TotalOperatingCashFlow"]
+                    current_multiplier = (
+                        round(scaled_ocf / raw_ocf, 6) if raw_ocf != 0 else 1.0
+                    )
+
+                    res = execute_three_way_match(
+                        raw_cf_snippet,
+                        ai_sorted_json,
+                        b_code,
+                        current_gap,
+                        current_multiplier,
+                    )
+                    print(
+                        f"      [VERDICT] {b_code}: {res['status']} | {res['message']}"
+                    )
+
+                    # Database logging
+                    if res["status"] == "SUCCESS":
+                        ticket_id = f"{ticker}_{date_str}_{b_code}"
+                        target_bucket = (
+                            list(ai_sorted_json.keys())[0]
+                            if ai_sorted_json
+                            else "Unknown"
                         )
-                        ai_sorted_json = {}
 
-                        # AI Pipeline: Vector Search + Reasoning
-                        for key in unmapped_keys:
-                            # Check if we already solved this key on a previous date/year
-                            if key in local_ai_cache:
-                                cached_bucket = local_ai_cache[key]
-                                if cached_bucket:  # If it wasn't a failed mapping
-                                    if cached_bucket not in ai_sorted_json:
-                                        ai_sorted_json[cached_bucket] = []
-                                    ai_sorted_json[cached_bucket].append(key)
+                        clean_gap = float(current_gap)
+                        clean_keys = [str(k) for k in res["missing_keys_found"]]
 
-                            # If not in cache, ask Ollama
-                            else:
-                                top_candidates = runtime.find_nearest_buckets(key)
-                                if top_candidates:
-                                    result = runtime.process_with_phi3(
-                                        key, top_candidates
-                                    )
-                                    if result:
-                                        for bucket, k_list in result.items():
-                                            local_ai_cache[key] = (
-                                                bucket  # Save to memory for the next years
-                                            )
-
-                                            if bucket not in ai_sorted_json:
-                                                ai_sorted_json[bucket] = []
-                                            ai_sorted_json[bucket].extend(k_list)
-                                    else:
-                                        # Remember that AI failed so we don't keep trying
-                                        local_ai_cache[key] = None
-
-                        # Proceed with gap verification if AI successfully mapped keys
-                        if ai_sorted_json:
-                            raw_ocf = raw_cf_snippet.get(
-                                "OperatingCashFlow",
-                                raw_cf_snippet.get("operatingCashflow", 1),
-                            )
-                            scaled_ocf = df_indirect_cf.at[
-                                date, "TotalOperatingCashFlow"
-                            ]
-                            current_multiplier = (
-                                round(scaled_ocf / raw_ocf, 6) if raw_ocf != 0 else 1.0
-                            )
-
-                            res = execute_three_way_match(
-                                raw_cf_snippet,
-                                ai_sorted_json,
-                                b_code,
-                                current_gap,
-                                current_multiplier,
-                            )
-                            print(
-                                f"      [VERDICT] {b_code}: {res['status']} | {res['message']}"
-                            )
-
-                            # Database logging
-                            if res["status"] == "SUCCESS":
-                                ticket_id = f"{ticker}_{date_str}_{b_code}"
-                                target_bucket = (
-                                    list(ai_sorted_json.keys())[0]
-                                    if ai_sorted_json
-                                    else "Unknown"
-                                )
-
-                                clean_gap = float(current_gap)
-                                clean_keys = [str(k) for k in res["missing_keys_found"]]
-
-                                query = text("""
+                        query = text("""
                                         INSERT INTO ai_forensic_logs 
                                         ("TicketID", "Timestamp", "Ticker", "LeakType", "LeakAmount", "MissingKeyFound", "SuggestedCategory", "Reasoning", "Status")
                                         VALUES (:tid, :ts, :t, :lt, :la, :mk, :sc, :rs, :st)
                                         ON CONFLICT ("TicketID") DO UPDATE SET "Status" = 'PENDING'
                                     """)
 
-                                try:
-                                    with engine.connect() as conn:
-                                        conn.execute(
-                                            query,
-                                            {
-                                                "tid": ticket_id,
-                                                "ts": datetime.now().date(),
-                                                "t": ticker,
-                                                "lt": b_code,
-                                                "la": clean_gap,
-                                                "mk": json.dumps(clean_keys),
-                                                "sc": str(target_bucket),
-                                                "rs": str(res["message"]),
-                                                "st": "PENDING",
-                                            },
-                                        )
-                                        conn.commit()
-                                    print(
-                                        f"      [DB LOG] Successfully logged fix under Ticket {ticket_id}."
-                                    )
-                                except Exception as e:
-                                    print(f"      [DB ERROR] Failed to log fix: {e}")
-                        else:
+                        try:
+                            with engine.connect() as conn:
+                                conn.execute(
+                                    query,
+                                    {
+                                        "tid": ticket_id,
+                                        "ts": datetime.now().date(),
+                                        "t": ticker,
+                                        "lt": b_code,
+                                        "la": clean_gap,
+                                        "mk": json.dumps(clean_keys),
+                                        "sc": str(target_bucket),
+                                        "rs": str(res["message"]),
+                                        "st": "PENDING",
+                                    },
+                                )
+                                conn.commit()
                             print(
-                                f"      [WARNING] AI Router failed to map keys. Skipping forensic check for this gap."
+                                f"      [DB LOG] Successfully logged fix under Ticket {ticket_id}."
                             )
+                        except Exception as e:
+                            print(f"      [DB ERROR] Failed to log fix: {e}")
+                else:
+                    print(
+                        f"      [WARNING] AI Router failed to map keys. Skipping forensic check for this gap."
+                    )
 
         # Final math updates
         # Final math updates
@@ -1254,294 +1249,254 @@ indirect_cf_buckets = [
 # CALL ALL API FUNCTION
 
 
-target_tickers = [
-    "RELIANCE.NS",
-    # "NTPC.NS",
-    # "POWERGRID.NS",
-    # "ADANIPOWER.NS",
-    # "TATAPOWER.NS",
-    # "JSWENERGY.NS",
-    # "ONGC.NS",
-    # "IOC.NS",
-    # "BPCL.NS",
-    # "GAIL.NS",
-    # "ADANIGREEN.NS",
-    # "IREDA.NS",
-    # "NHPC.NS",
-    # "ADANIENSOL.NS",
-    # "IEX.NS",
-    # "TORRENTPOWER.NS",
-    # "GUJGASLTD.NS",
-    # "PETRONET.NS",
-    # "SJVN.NS",
-    # "CESC.NS",
-]
-failed_tickers = []
+def run_etl_pipeline(ai_mode="local"):
+    target_tickers = [
+        "NTPC.NS",
+        "POWERGRID",
+        "ADANIPOWER.NS",
+        "TATAPOWER",
+        "JSWENERGY.NS",
+        "ONGC.NS",
+        "IOC",
+        "BPCL",
+        "GAIL.NS",
+        "ADANIGREEN.NS",
+        "IREDA.NS",
+        "NHPC.NS",
+        "ADANIENSOL.NS",
+        "IEX.NS",
+        "TORRENTPOWER.NS",
+        "GUJGASLTD.NS",
+        "PETRONET.NS",
+        "SJVN.NS",
+        "CESC.NS",
+    ]
+    failed_tickers = []
 
-print("\n" + "=" * 40)
-print("STARTING BATCH PROCESSING")
-print("=" * 40)
+    print("\n" + "=" * 40)
+    print(f"STARTING BATCH PROCESSING (Mode: {ai_mode.upper()})")
+    print("=" * 40)
 
-##Start
+    try:
+        for ticker in target_tickers:
+            # FETCH UNIFIED PAYLOAD
+            payload = fetch_all_financials(ticker)
 
-try:
-    for ticker in target_tickers:
-        # FETCH UNIFIED PAYLOAD
-        payload = fetch_all_financials(ticker)
+            if not payload:
+                failed_tickers.append(ticker)
+                continue
 
-        if not payload:
-            failed_tickers.append(ticker)
-            continue
+            source = payload["source"]
+            data = payload["data"]
 
-        source = payload["source"]
-        data = payload["data"]
+            # UNPACK TO DATAFRAMES
+            print(f"[{ticker}] Formatting DataFrames for {source}...")
 
-        # UNPACK TO DATAFRAMES
-        print(f"[{ticker}] Formatting DataFrames for {source}...")
-
-        if source == "yfinance":
-            dfIncomeStatementQ = pd.DataFrame(data["is_q"])
-            dfIncomeStatementY = pd.DataFrame(data["is_y"])
-            dfBalanceSheetQ = pd.DataFrame(data["bs_q"])
-            dfBalanceSheetY = pd.DataFrame(data["bs_y"])
-            dfCashFlowY = pd.DataFrame(data["cf_y"])
-            dfCashFlowQ = (
-                pd.DataFrame(data["cf_q"]) if data["cf_q"] is not None else None
-            )
-
-        elif source == "vantage":
-            dfIncomeStatementQ = (
-                pd.DataFrame(data["is"]["quarterlyReports"])
-                .set_index("fiscalDateEnding")
-                .rename_axis(None)
-                .T
-            )
-            dfIncomeStatementY = (
-                pd.DataFrame(data["is"]["annualReports"])
-                .set_index("fiscalDateEnding")
-                .rename_axis(None)
-                .T
-            )
-            dfBalanceSheetQ = pd.DataFrame(data["bs"]["quarterlyReports"]).set_index(
-                "fiscalDateEnding"
-            )
-            dfBalanceSheetY = pd.DataFrame(data["bs"]["annualReports"]).set_index(
-                "fiscalDateEnding"
-            )
-            dfCashFlowQ = pd.DataFrame(data["cf"]["quarterlyReports"]).set_index(
-                "fiscalDateEnding"
-            )
-            dfCashFlowY = pd.DataFrame(data["cf"]["annualReports"]).set_index(
-                "fiscalDateEnding"
-            )
-
-        elif source == "screener":
-            dfIncomeStatementQ = pd.DataFrame(data["is_q"])
-            dfIncomeStatementY = pd.DataFrame(data["is_y"])
-            dfBalanceSheetY = pd.DataFrame(data["bs_y"])
-            dfCashFlowY = pd.DataFrame(data["cf_y"])
-            dfBalanceSheetQ = None
-            dfCashFlowQ = None
-
-        # UNIFIED CLEANING & MAPPING
-        print(f"[{ticker}] Cleaning and Mapping Data...")
-
-        if source == "vantage":
-            stmt_currency = "USD"
-            stmt_multiplier = 0.000001
-        elif source == "yfinance":
-            stmt_currency = yf.Ticker(ticker).info.get("currency", "USD")
-            stmt_multiplier = 0.000001
-        elif source == "screener":
-            stmt_currency = "INR"
-            stmt_multiplier = 10.0
-
-        # Base Pre-Processing
-        if dfIncomeStatementY is not None:
-            dfIncomeStatementY = clean_financial_dataframe(
-                standardize_dataframe_labels(to_pascal_case(dfIncomeStatementY))
-            )
-        if dfIncomeStatementQ is not None:
-            dfIncomeStatementQ = clean_financial_dataframe(
-                standardize_dataframe_labels(to_pascal_case(dfIncomeStatementQ))
-            )
-        if dfBalanceSheetY is not None:
-            dfBalanceSheetY = clean_financial_dataframe(
-                standardize_dataframe_labels(to_pascal_case(dfBalanceSheetY))
-            )
-        if dfBalanceSheetQ is not None:
-            dfBalanceSheetQ = clean_financial_dataframe(
-                standardize_dataframe_labels(to_pascal_case(dfBalanceSheetQ))
-            )
-        if dfCashFlowY is not None:
-            dfCashFlowY = clean_financial_dataframe(
-                standardize_dataframe_labels(to_pascal_case(dfCashFlowY))
-            )
-        if dfCashFlowQ is not None:
-            dfCashFlowQ = clean_financial_dataframe(
-                standardize_dataframe_labels(to_pascal_case(dfCashFlowQ))
-            )
-
-        # Screener-Specific Conversions
-        if source == "screener":
-            if dfIncomeStatementQ is not None:
-                dfIncomeStatementQ = convert_screener_percentages_to_absolute(
-                    dfIncomeStatementQ
+            if source == "yfinance":
+                dfIncomeStatementQ = pd.DataFrame(data["is_q"])
+                dfIncomeStatementY = pd.DataFrame(data["is_y"])
+                dfBalanceSheetQ = pd.DataFrame(data["bs_q"])
+                dfBalanceSheetY = pd.DataFrame(data["bs_y"])
+                dfCashFlowY = pd.DataFrame(data["cf_y"])
+                dfCashFlowQ = (
+                    pd.DataFrame(data["cf_q"]) if data["cf_q"] is not None else None
                 )
+
+            elif source == "vantage":
+                dfIncomeStatementQ = (
+                    pd.DataFrame(data["is"]["quarterlyReports"])
+                    .set_index("fiscalDateEnding")
+                    .rename_axis(None)
+                    .T
+                )
+                dfIncomeStatementY = (
+                    pd.DataFrame(data["is"]["annualReports"])
+                    .set_index("fiscalDateEnding")
+                    .rename_axis(None)
+                    .T
+                )
+                dfBalanceSheetQ = pd.DataFrame(
+                    data["bs"]["quarterlyReports"]
+                ).set_index("fiscalDateEnding")
+                dfBalanceSheetY = pd.DataFrame(data["bs"]["annualReports"]).set_index(
+                    "fiscalDateEnding"
+                )
+                dfCashFlowQ = pd.DataFrame(data["cf"]["quarterlyReports"]).set_index(
+                    "fiscalDateEnding"
+                )
+                dfCashFlowY = pd.DataFrame(data["cf"]["annualReports"]).set_index(
+                    "fiscalDateEnding"
+                )
+
+            elif source == "screener":
+                dfIncomeStatementQ = pd.DataFrame(data["is_q"])
+                dfIncomeStatementY = pd.DataFrame(data["is_y"])
+                dfBalanceSheetY = pd.DataFrame(data["bs_y"])
+                dfCashFlowY = pd.DataFrame(data["cf_y"])
+                dfBalanceSheetQ = None
+                dfCashFlowQ = None
+
+            # UNIFIED CLEANING & MAPPING
+            print(f"[{ticker}] Cleaning and Mapping Data...")
+
+            if source == "vantage":
+                stmt_currency = "USD"
+                stmt_multiplier = 0.000001
+            elif source == "yfinance":
+                stmt_currency = yf.Ticker(ticker).info.get("currency", "USD")
+                stmt_multiplier = 0.000001
+            elif source == "screener":
+                stmt_currency = "INR"
+                stmt_multiplier = 10.0
+
+            # Base Pre-Processing
             if dfIncomeStatementY is not None:
-                dfIncomeStatementY = convert_screener_percentages_to_absolute(
-                    dfIncomeStatementY
+                dfIncomeStatementY = clean_financial_dataframe(
+                    standardize_dataframe_labels(to_pascal_case(dfIncomeStatementY))
                 )
-
-        # Dictionary Mapping & Fallback Application
-        if source in ["yfinance", "screener"]:
-            is_keys = ittelson_income_statement_columns + [
-                "PretaxIncome",
-                "MaterialCost",
-                "ManufacturingCost",
-                "EmployeeCost",
-                "OtherCost",
-            ]
-            bs_keys = ittelson_balance_sheet_columns + [
-                "CashEquivalents",
-                "Investments",
-                "LoansNAdvances",
-                "OtherAssetItems",
-                "TradePayables",
-                "AdvanceFromCustomers",
-                "ShortTermBorrowings",
-                "LeaseLiabilities",
-                "LongTermBorrowings",
-                "OtherBorrowings",
-                "OtherLiabilityItems",
-                "Borrowings",
-                "OtherLiabilities",
-            ]
-            cf_keys = ittelson_cash_flow_columns + [
-                "IssuanceOfDebt",
-                "RepaymentOfDebt",
-                "NetCashFlow",
-            ]
-            cf_indirect_keys = ittelson_indirect_cf_columns + [
-                "IssuanceOfDebt",
-                "RepaymentOfDebt",
-                "NetCashFlow",
-            ]
-
             if dfIncomeStatementQ is not None:
-                dfIncomeStatementQ_calc = apply_income_statement_fallbacks(
-                    map_statement_via_dictionary(
-                        dfIncomeStatementQ, normalized_is_synonym_map, is_keys
-                    ),
-                    ittelson_income_statement_columns,
-                )
-            if dfIncomeStatementY is not None:
-                df_norm_is_y = map_statement_via_dictionary(
-                    dfIncomeStatementY, normalized_is_synonym_map, is_keys
-                ).iloc[:, :-1]
-                if source == "yfinance":
-                    df_norm_is_y = df_norm_is_y.iloc[:, :-1]
-                dfIncomeStatementY_calc = apply_income_statement_fallbacks(
-                    df_norm_is_y, ittelson_income_statement_columns
-                )
-
-            if dfBalanceSheetQ is not None:
-                dfBalanceSheetQ_calc = apply_balance_sheet_fallbacks(
-                    map_statement_via_dictionary(
-                        dfBalanceSheetQ, normalized_bs_synonym_map, bs_keys
-                    ),
-                    ittelson_balance_sheet_columns,
+                dfIncomeStatementQ = clean_financial_dataframe(
+                    standardize_dataframe_labels(to_pascal_case(dfIncomeStatementQ))
                 )
             if dfBalanceSheetY is not None:
-                dfBalanceSheetY_calc = apply_balance_sheet_fallbacks(
-                    map_statement_via_dictionary(
-                        dfBalanceSheetY, normalized_bs_synonym_map, bs_keys
-                    ),
-                    ittelson_balance_sheet_columns,
+                dfBalanceSheetY = clean_financial_dataframe(
+                    standardize_dataframe_labels(to_pascal_case(dfBalanceSheetY))
                 )
-
+            if dfBalanceSheetQ is not None:
+                dfBalanceSheetQ = clean_financial_dataframe(
+                    standardize_dataframe_labels(to_pascal_case(dfBalanceSheetQ))
+                )
+            if dfCashFlowY is not None:
+                dfCashFlowY = clean_financial_dataframe(
+                    standardize_dataframe_labels(to_pascal_case(dfCashFlowY))
+                )
             if dfCashFlowQ is not None:
-                dfCashFlowQ_calc = apply_cash_flow_fallbacks(
-                    map_statement_via_dictionary(
-                        dfCashFlowQ, normalized_cf_synonym_map, cf_keys
-                    ),
-                    ittelson_cash_flow_columns,
-                    df_is_calc=dfIncomeStatementQ_calc,
-                    df_bs_calc=dfBalanceSheetQ_calc,
-                )
-            if dfCashFlowY is not None:
-                dfCashFlowY_calc = apply_cash_flow_fallbacks(
-                    map_statement_via_dictionary(
-                        dfCashFlowY, normalized_cf_synonym_map, cf_keys
-                    ),
-                    ittelson_cash_flow_columns,
-                    df_is_calc=dfIncomeStatementY_calc,
-                    df_bs_calc=dfBalanceSheetY_calc,
+                dfCashFlowQ = clean_financial_dataframe(
+                    standardize_dataframe_labels(to_pascal_case(dfCashFlowQ))
                 )
 
-            if dfCashFlowY is not None:
-                dfInDirectCashFlowY_calc = apply_indirect_cash_flow_fallbacks(
-                    map_statement_via_dictionary(
-                        dfCashFlowY,
-                        normalized_indirect_cf_synonym_map,
-                        cf_indirect_keys,
-                        bucket_columns=indirect_cf_buckets,
-                    ),
-                    ittelson_indirect_cf_columns,
-                    df_is_calc=dfIncomeStatementY_calc,
-                    df_bs_calc=dfBalanceSheetY_calc,
-                )
+            # Screener-Specific Conversions
+            if source == "screener":
+                if dfIncomeStatementQ is not None:
+                    dfIncomeStatementQ = convert_screener_percentages_to_absolute(
+                        dfIncomeStatementQ
+                    )
+                if dfIncomeStatementY is not None:
+                    dfIncomeStatementY = convert_screener_percentages_to_absolute(
+                        dfIncomeStatementY
+                    )
 
-        else:
-            dfIncomeStatementQ_calc = dfIncomeStatementQ
-            dfIncomeStatementY_calc = dfIncomeStatementY
-            dfBalanceSheetQ_calc = dfBalanceSheetQ
-            dfBalanceSheetY_calc = dfBalanceSheetY
-            dfCashFlowQ_calc = dfCashFlowQ
-            dfCashFlowY_calc = dfCashFlowY
-            dfInDirectCashFlowY_calc = dfCashFlowY
+            # Dictionary Mapping & Fallback Application
+            if source in ["yfinance", "screener"]:
+                is_keys = ittelson_income_statement_columns + [
+                    "PretaxIncome",
+                    "MaterialCost",
+                    "ManufacturingCost",
+                    "EmployeeCost",
+                    "OtherCost",
+                ]
+                bs_keys = ittelson_balance_sheet_columns + [
+                    "CashEquivalents",
+                    "Investments",
+                    "LoansNAdvances",
+                    "OtherAssetItems",
+                    "TradePayables",
+                    "AdvanceFromCustomers",
+                    "ShortTermBorrowings",
+                    "LeaseLiabilities",
+                    "LongTermBorrowings",
+                    "OtherBorrowings",
+                    "OtherLiabilityItems",
+                    "Borrowings",
+                    "OtherLiabilities",
+                ]
+                cf_keys = ittelson_cash_flow_columns + [
+                    "IssuanceOfDebt",
+                    "RepaymentOfDebt",
+                    "NetCashFlow",
+                ]
+                cf_indirect_keys = ittelson_indirect_cf_columns + [
+                    "IssuanceOfDebt",
+                    "RepaymentOfDebt",
+                    "NetCashFlow",
+                ]
 
-        # Format for Database
-        clean_yearly_income_statement = format_statement_for_db(
-            dfIncomeStatementY_calc,
-            ittelson_income_statement_columns,
-            ticker,
-            currency=stmt_currency,
-            data_source=source,
-            multiplier=stmt_multiplier,
-            transpose=True,
-        ).replace("None", np.nan)
-        clean_yearly_balance_sheet = format_statement_for_db(
-            dfBalanceSheetY_calc,
-            ittelson_balance_sheet_columns,
-            ticker,
-            currency=stmt_currency,
-            data_source=source,
-            multiplier=stmt_multiplier,
-            transpose=True,
-        ).replace("None", np.nan)
-        clean_yearly_cash_flow = format_statement_for_db(
-            dfCashFlowY_calc,
-            ittelson_cash_flow_columns,
-            ticker,
-            currency=stmt_currency,
-            data_source=source,
-            multiplier=stmt_multiplier,
-            transpose=True,
-        ).replace("None", np.nan)
-        clean_yearly_indirect_cash_flow = format_statement_for_db(
-            dfInDirectCashFlowY_calc,
-            ittelson_indirect_cf_columns,
-            ticker,
-            currency=stmt_currency,
-            data_source=source,
-            multiplier=stmt_multiplier,
-            transpose=True,
-        ).replace("None", np.nan)
+                if dfIncomeStatementQ is not None:
+                    dfIncomeStatementQ_calc = apply_income_statement_fallbacks(
+                        map_statement_via_dictionary(
+                            dfIncomeStatementQ, normalized_is_synonym_map, is_keys
+                        ),
+                        ittelson_income_statement_columns,
+                    )
+                if dfIncomeStatementY is not None:
+                    df_norm_is_y = map_statement_via_dictionary(
+                        dfIncomeStatementY, normalized_is_synonym_map, is_keys
+                    ).iloc[:, :-1]
+                    if source == "yfinance":
+                        df_norm_is_y = df_norm_is_y.iloc[:, :-1]
+                    dfIncomeStatementY_calc = apply_income_statement_fallbacks(
+                        df_norm_is_y, ittelson_income_statement_columns
+                    )
 
-        if dfIncomeStatementQ is not None:
-            clean_quarterly_income_statement = format_statement_for_db(
-                dfIncomeStatementQ_calc,
+                if dfBalanceSheetQ is not None:
+                    dfBalanceSheetQ_calc = apply_balance_sheet_fallbacks(
+                        map_statement_via_dictionary(
+                            dfBalanceSheetQ, normalized_bs_synonym_map, bs_keys
+                        ),
+                        ittelson_balance_sheet_columns,
+                    )
+                if dfBalanceSheetY is not None:
+                    dfBalanceSheetY_calc = apply_balance_sheet_fallbacks(
+                        map_statement_via_dictionary(
+                            dfBalanceSheetY, normalized_bs_synonym_map, bs_keys
+                        ),
+                        ittelson_balance_sheet_columns,
+                    )
+
+                if dfCashFlowQ is not None:
+                    dfCashFlowQ_calc = apply_cash_flow_fallbacks(
+                        map_statement_via_dictionary(
+                            dfCashFlowQ, normalized_cf_synonym_map, cf_keys
+                        ),
+                        ittelson_cash_flow_columns,
+                        df_is_calc=dfIncomeStatementQ_calc,
+                        df_bs_calc=dfBalanceSheetQ_calc,
+                    )
+                if dfCashFlowY is not None:
+                    dfCashFlowY_calc = apply_cash_flow_fallbacks(
+                        map_statement_via_dictionary(
+                            dfCashFlowY, normalized_cf_synonym_map, cf_keys
+                        ),
+                        ittelson_cash_flow_columns,
+                        df_is_calc=dfIncomeStatementY_calc,
+                        df_bs_calc=dfBalanceSheetY_calc,
+                    )
+
+                if dfCashFlowY is not None:
+                    dfInDirectCashFlowY_calc = apply_indirect_cash_flow_fallbacks(
+                        map_statement_via_dictionary(
+                            dfCashFlowY,
+                            normalized_indirect_cf_synonym_map,
+                            cf_indirect_keys,
+                            bucket_columns=indirect_cf_buckets,
+                        ),
+                        ittelson_indirect_cf_columns,
+                        df_is_calc=dfIncomeStatementY_calc,
+                        df_bs_calc=dfBalanceSheetY_calc,
+                    )
+
+            else:
+                dfIncomeStatementQ_calc = dfIncomeStatementQ
+                dfIncomeStatementY_calc = dfIncomeStatementY
+                dfBalanceSheetQ_calc = dfBalanceSheetQ
+                dfBalanceSheetY_calc = dfBalanceSheetY
+                dfCashFlowQ_calc = dfCashFlowQ
+                dfCashFlowY_calc = dfCashFlowY
+                dfInDirectCashFlowY_calc = dfCashFlowY
+
+            # Format for Database
+            clean_yearly_income_statement = format_statement_for_db(
+                dfIncomeStatementY_calc,
                 ittelson_income_statement_columns,
                 ticker,
                 currency=stmt_currency,
@@ -1549,9 +1504,8 @@ try:
                 multiplier=stmt_multiplier,
                 transpose=True,
             ).replace("None", np.nan)
-        if dfBalanceSheetQ is not None:
-            clean_quarterly_balance_sheet = format_statement_for_db(
-                dfBalanceSheetQ_calc,
+            clean_yearly_balance_sheet = format_statement_for_db(
+                dfBalanceSheetY_calc,
                 ittelson_balance_sheet_columns,
                 ticker,
                 currency=stmt_currency,
@@ -1559,9 +1513,8 @@ try:
                 multiplier=stmt_multiplier,
                 transpose=True,
             ).replace("None", np.nan)
-        if dfCashFlowQ is not None:
-            clean_quarterly_cash_flow = format_statement_for_db(
-                dfCashFlowQ_calc,
+            clean_yearly_cash_flow = format_statement_for_db(
+                dfCashFlowY_calc,
                 ittelson_cash_flow_columns,
                 ticker,
                 currency=stmt_currency,
@@ -1569,104 +1522,119 @@ try:
                 multiplier=stmt_multiplier,
                 transpose=True,
             ).replace("None", np.nan)
+            clean_yearly_indirect_cash_flow = format_statement_for_db(
+                dfInDirectCashFlowY_calc,
+                ittelson_indirect_cf_columns,
+                ticker,
+                currency=stmt_currency,
+                data_source=source,
+                multiplier=stmt_multiplier,
+                transpose=True,
+            ).replace("None", np.nan)
 
-        # VALIDATE & FLAG
-        audit_results_Y, clean_yearly_indirect_cash_flow = (
-            validate_financial_statements(
-                clean_yearly_income_statement,
-                clean_yearly_balance_sheet,
-                clean_yearly_cash_flow,
-                clean_yearly_indirect_cash_flow,
-                ticker=ticker,
-                raw_df_is=(
-                    dfIncomeStatementY.T if dfIncomeStatementY is not None else None
-                ),
-                raw_df_bs=dfBalanceSheetY.T if dfBalanceSheetY is not None else None,
-                raw_df_cf=dfCashFlowY.T if dfCashFlowY is not None else None,
-                is_mapping=normalized_is_synonym_map,
-                bs_mapping=normalized_bs_synonym_map,
-                cf_mapping=normalized_indirect_cf_synonym_map,
+            if dfIncomeStatementQ is not None:
+                clean_quarterly_income_statement = format_statement_for_db(
+                    dfIncomeStatementQ_calc,
+                    ittelson_income_statement_columns,
+                    ticker,
+                    currency=stmt_currency,
+                    data_source=source,
+                    multiplier=stmt_multiplier,
+                    transpose=True,
+                ).replace("None", np.nan)
+            if dfBalanceSheetQ is not None:
+                clean_quarterly_balance_sheet = format_statement_for_db(
+                    dfBalanceSheetQ_calc,
+                    ittelson_balance_sheet_columns,
+                    ticker,
+                    currency=stmt_currency,
+                    data_source=source,
+                    multiplier=stmt_multiplier,
+                    transpose=True,
+                ).replace("None", np.nan)
+            if dfCashFlowQ is not None:
+                clean_quarterly_cash_flow = format_statement_for_db(
+                    dfCashFlowQ_calc,
+                    ittelson_cash_flow_columns,
+                    ticker,
+                    currency=stmt_currency,
+                    data_source=source,
+                    multiplier=stmt_multiplier,
+                    transpose=True,
+                ).replace("None", np.nan)
+
+            # VALIDATE & FLAG
+            audit_results_Y, clean_yearly_indirect_cash_flow = (
+                validate_financial_statements(
+                    clean_yearly_income_statement,
+                    clean_yearly_balance_sheet,
+                    clean_yearly_cash_flow,
+                    clean_yearly_indirect_cash_flow,
+                    ticker=ticker,
+                    raw_df_is=(
+                        dfIncomeStatementY.T if dfIncomeStatementY is not None else None
+                    ),
+                    raw_df_bs=(
+                        dfBalanceSheetY.T if dfBalanceSheetY is not None else None
+                    ),
+                    raw_df_cf=dfCashFlowY.T if dfCashFlowY is not None else None,
+                    is_mapping=normalized_is_synonym_map,
+                    bs_mapping=normalized_bs_synonym_map,
+                    cf_mapping=normalized_indirect_cf_synonym_map,
+                    ai_mode=ai_mode,
+                )
             )
-        )
 
-        clean_yearly_income_statement["IsValid"] = (
-            clean_yearly_income_statement["ReportDate"]
-            .map(audit_results_Y["IS_IsValid"])
-            .fillna(False)
-        )
-        clean_yearly_balance_sheet["IsValid"] = (
-            clean_yearly_balance_sheet["ReportDate"]
-            .map(audit_results_Y["BS_IsValid"])
-            .fillna(False)
-        )
-        clean_yearly_cash_flow["IsValid"] = (
-            clean_yearly_cash_flow["ReportDate"]
-            .map(audit_results_Y["Direct_CF_Match"])
-            .fillna(False)
-        )
-        clean_yearly_indirect_cash_flow["IsValid"] = (
-            clean_yearly_indirect_cash_flow["ReportDate"]
-            .map(audit_results_Y["Indirect_CF_Rollforward"])
-            .fillna(False)
-        )
+            clean_yearly_income_statement["IsValid"] = (
+                clean_yearly_income_statement["ReportDate"]
+                .map(audit_results_Y["IS_IsValid"])
+                .fillna(False)
+            )
+            clean_yearly_balance_sheet["IsValid"] = (
+                clean_yearly_balance_sheet["ReportDate"]
+                .map(audit_results_Y["BS_IsValid"])
+                .fillna(False)
+            )
+            clean_yearly_cash_flow["IsValid"] = (
+                clean_yearly_cash_flow["ReportDate"]
+                .map(audit_results_Y["Direct_CF_Match"])
+                .fillna(False)
+            )
+            clean_yearly_indirect_cash_flow["IsValid"] = (
+                clean_yearly_indirect_cash_flow["ReportDate"]
+                .map(audit_results_Y["Indirect_CF_Rollforward"])
+                .fillna(False)
+            )
 
-        # UPSERT TO POSTGRES
-        print(f"[{ticker}] Upserting Validated Data to Postgres...")
+            # UPSERT TO POSTGRES
+            print(f"[{ticker}] Upserting Validated Data to Postgres...")
 
-        clean_yearly_income_statement.to_sql(
-            name="yearly_income_statement",
-            con=engine,
-            schema="public",
-            if_exists="append",
-            index=False,
-            method=postgres_upsert,
-        )
-        clean_yearly_balance_sheet.to_sql(
-            name="yearly_balance_sheet",
-            con=engine,
-            schema="public",
-            if_exists="append",
-            index=False,
-            method=postgres_upsert,
-        )
-        clean_yearly_cash_flow.to_sql(
-            name="yearly_cash_flow",
-            con=engine,
-            schema="public",
-            if_exists="append",
-            index=False,
-            method=postgres_upsert,
-        )
-        clean_yearly_indirect_cash_flow.to_sql(
-            name="yearly_indirect_cash_flow",
-            con=engine,
-            schema="public",
-            if_exists="append",
-            index=False,
-            method=postgres_upsert,
-        )
-
-        if dfIncomeStatementQ is not None:
-            clean_quarterly_income_statement.to_sql(
-                name="quarterly_income_statement",
+            clean_yearly_income_statement.to_sql(
+                name="yearly_income_statement",
                 con=engine,
                 schema="public",
                 if_exists="append",
                 index=False,
                 method=postgres_upsert,
             )
-        if dfBalanceSheetQ is not None:
-            clean_quarterly_balance_sheet.to_sql(
-                name="quarterly_balance_sheet",
+            clean_yearly_balance_sheet.to_sql(
+                name="yearly_balance_sheet",
                 con=engine,
                 schema="public",
                 if_exists="append",
                 index=False,
                 method=postgres_upsert,
             )
-        if dfCashFlowQ is not None:
-            clean_quarterly_cash_flow.to_sql(
-                name="quarterly_cash_flow",
+            clean_yearly_cash_flow.to_sql(
+                name="yearly_cash_flow",
+                con=engine,
+                schema="public",
+                if_exists="append",
+                index=False,
+                method=postgres_upsert,
+            )
+            clean_yearly_indirect_cash_flow.to_sql(
+                name="yearly_indirect_cash_flow",
                 con=engine,
                 schema="public",
                 if_exists="append",
@@ -1674,18 +1642,42 @@ try:
                 method=postgres_upsert,
             )
 
-        print(f"[{ticker}] Processing complete. Pausing for rate limits...")
-        time.sleep(12)
+            if dfIncomeStatementQ is not None:
+                clean_quarterly_income_statement.to_sql(
+                    name="quarterly_income_statement",
+                    con=engine,
+                    schema="public",
+                    if_exists="append",
+                    index=False,
+                    method=postgres_upsert,
+                )
+            if dfBalanceSheetQ is not None:
+                clean_quarterly_balance_sheet.to_sql(
+                    name="quarterly_balance_sheet",
+                    con=engine,
+                    schema="public",
+                    if_exists="append",
+                    index=False,
+                    method=postgres_upsert,
+                )
+            if dfCashFlowQ is not None:
+                clean_quarterly_cash_flow.to_sql(
+                    name="quarterly_cash_flow",
+                    con=engine,
+                    schema="public",
+                    if_exists="append",
+                    index=False,
+                    method=postgres_upsert,
+                )
 
-finally:
-    # SHUTDOWN: Purge VRAM only after ALL tickers are finished
-    runtime.purge_memory()
+            print(f"[{ticker}] Processing complete. Pausing for rate limits...")
+            time.sleep(12)
 
-# End of loop summary
-print("\n" + "=" * 40)
-print("BATCH PROCESSING COMPLETE")
-if failed_tickers:
-    print(f"Failed tickers requiring review: {failed_tickers}")
-else:
-    print("All tickers processed successfully.")
-print("=" * 40)
+    finally:
+        runtime.purge_memory()
+
+        print("\n" + "=" * 40)
+        print("BATCH PROCESSING COMPLETE")
+        if failed_tickers:
+            print(f"Failed tickers requiring review: {failed_tickers}")
+        print("=" * 40)
