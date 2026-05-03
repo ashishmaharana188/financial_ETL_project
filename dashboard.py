@@ -70,7 +70,7 @@ def run_local_ollama(keys):
     """
     Helper to mimic the local Ollama logic from the scraper loop.
     """
-    runtime.initialize_cognitive_engine()
+    runtime.load_models()
     ai_sorted_json = {}
     for key in keys:
         top_candidates = runtime.find_nearest_buckets(key)

@@ -21,8 +21,11 @@ from scripts.database import engine
 from scripts.reconciliation import extract_mapped_keys, execute_three_way_match
 from sqlalchemy import text
 from scripts.model_runtime import runtime
+from scripts.model_runtime import runtime
+from scripts.vectorize import get_top_buckets
+from scripts.reasoning import analyze_key_with_phi3
 
-runtime.initialize_cognitive_engine()
+runtime.load_models()
 
 # vantage api key
 API_KEY = "V6FLFA1K7ECKP0RK"
@@ -988,79 +991,85 @@ def validate_financial_statements(
 ):
     print("RUNNING 3-STATEMENT VALIDATION")
 
-    # Set indices for alignment
+    # 1. Align Statements for Multi-Point Comparison
     df_is = df_is.set_index("ReportDate")
     df_bs = df_bs.set_index("ReportDate")
     df_cf = df_cf.set_index("ReportDate")
-
     if df_indirect_cf is not None:
         df_indirect_cf = df_indirect_cf.set_index("ReportDate")
 
-    print("\n--- DIRECT STATEMENTS AUDIT ---")
+    # 2. Hierarchical Grouping (Based on mapping_config_2.json)
+    # This prevents the AI from looking in the wrong section for a gap fix.
+    SECTION_BUCKETS = {
+        "OCF": [
+            "NetIncome",
+            "DepreciationAndAmortization",
+            "OtherNonCashAdjustments",
+            "ChangeInAccountsReceivable",
+            "ChangeInInventory",
+            "ChangeInAccountsPayable",
+            "OtherWorkingCapitalChanges",
+            "IncomeTaxPaid",
+        ],
+        "ICF": [
+            "CapExPurchaseOfPPE",
+            "PurchaseSaleOfInvestments",
+            "OtherInvestingActivities",
+        ],
+        "FCF": [
+            "NetDebtIssuedRepaid",
+            "NetStockIssuedRepurchased",
+            "DividendsPaid",
+            "OtherFinancingActivities",
+        ],
+    }
 
-    # 1. BALANCE SHEET
+    print("\n--- DIRECT STATEMENTS AUDIT ---")
     bs_calc = df_bs["TotalLiabilitiesNetMinorityInterest"] + df_bs["StockholdersEquity"]
     bs_gap = df_bs["TotalAssets"] - bs_calc
     bs_check = bs_gap.abs() <= 10
-    if bs_check.all():
-        print("Balance Sheet Equation (Assets = L + E): PERFECT MATCH")
 
-    # 2. INCOME STATEMENT
     is_calc = df_is["GrossProfit"] - df_is["OperatingExpense"]
     is_check = (df_is["OperatingIncome"] - is_calc).abs() < 1
-    if is_check.all():
-        print("Income Statement Equation (GP - Opex = OpInc): PERFECT MATCH")
-
-    # 3. BALANCE SHEET TO CASH FLOW LINK
-    common_bs_cf = df_cf.index.intersection(df_bs.index)
-    bs_aggregate = df_bs.loc[common_bs_cf, "CashCashEquivalentsAndShortTermInvestments"]
-    cf_cash = df_cf.loc[common_bs_cf, "EndingCashBalance"]
-    bs_cf_check = (cf_cash - bs_aggregate).abs() < 5.0
-
-    # 4. DIRECT CASH FLOW
-    cf_check = (
-        df_cf["CashFromOperations"]
-        - (df_cf["CashReceipts"] - df_cf["CashDisbursements"])
-    ).abs() < 1
 
     audit_dict = {
         "BS_IsValid": bs_check,
         "IS_IsValid": is_check,
-        "BS_CF_Link_Match": bs_cf_check,
-        "Direct_CF_Match": cf_check,
+        "BS_CF_Link_Match": (
+            df_cf["EndingCashBalance"]
+            - df_bs["CashCashEquivalentsAndShortTermInvestments"]
+        ).abs()
+        < 5.0,
+        "Direct_CF_Match": (
+            df_cf["CashFromOperations"]
+            - (df_cf["CashReceipts"] - df_cf["CashDisbursements"])
+        ).abs()
+        < 1,
     }
 
-    # INDIRECT CASH FLOW VALIDATION
+    # 3. Indirect Cash Flow Forensic Audit
     if df_indirect_cf is not None:
-        print("\n--- INDIRECT CASH FLOW FORENSIC AUDIT ---")
-
+        print("\n--- TARGETED INDIRECT CASH FLOW FORENSIC AUDIT ---")
         local_ai_cache = {}
 
-        # SOURCE-AWARE CALCULATIONS
+        # Calculation Base (Varies by data source)
         is_screener = ("DataSource" in df_indirect_cf.columns) and (
-            str(df_indirect_cf["DataSource"].iloc[0]).strip().lower() == "screener"
+            str(df_indirect_cf["DataSource"].iloc[0]).lower() == "screener"
         )
 
-        if is_screener:
-            calc_ocf_base = (
-                df_indirect_cf["NetIncome"]
-                + df_indirect_cf["OtherNonCashAdjustments"]
-                + df_indirect_cf["ChangeInAccountsReceivable"]
-                + df_indirect_cf["ChangeInInventory"]
-                + df_indirect_cf["ChangeInAccountsPayable"]
-                + df_indirect_cf["OtherWorkingCapitalChanges"]
-                + df_indirect_cf["IncomeTaxPaid"].fillna(0)
+        calc_ocf_base = (
+            df_indirect_cf["NetIncome"]
+            + df_indirect_cf["OtherNonCashAdjustments"]
+            + df_indirect_cf["ChangeInAccountsReceivable"]
+            + df_indirect_cf["ChangeInInventory"]
+            + df_indirect_cf["ChangeInAccountsPayable"]
+            + df_indirect_cf["OtherWorkingCapitalChanges"]
+            + (
+                df_indirect_cf["IncomeTaxPaid"].fillna(0)
+                if is_screener
+                else df_indirect_cf["DepreciationAndAmortization"]
             )
-        else:
-            calc_ocf_base = (
-                df_indirect_cf["NetIncome"]
-                + df_indirect_cf["DepreciationAndAmortization"]
-                + df_indirect_cf["OtherNonCashAdjustments"]
-                + df_indirect_cf["ChangeInAccountsReceivable"]
-                + df_indirect_cf["ChangeInInventory"]
-                + df_indirect_cf["ChangeInAccountsPayable"]
-                + df_indirect_cf["OtherWorkingCapitalChanges"]
-            )
+        )
 
         calc_icf_base = (
             df_indirect_cf["CapExPurchaseOfPPE"]
@@ -1090,6 +1099,81 @@ def validate_financial_statements(
                 else {}
             )
 
+            # 1. THE MISSING LINK: Robust Multiplier Anchor
+            raw_ocf_val = 0
+            for k, v in raw_cf_snippet.items():
+                # Strip all spaces, underscores, and lowercase it for a guaranteed match
+                clean_key = str(k).replace(" ", "").replace("_", "").lower()
+                if clean_key in [
+                    "operatingcashflow",
+                    "cashfromoperatingactivity",
+                    "netcashfromoperatingactivities",
+                ]:
+                    raw_ocf_val = v
+                    break
+
+            scaled_ocf_val = df_indirect_cf.at[date, "TotalOperatingCashFlow"]
+            current_multiplier = (
+                round(scaled_ocf_val / raw_ocf_val, 6) if raw_ocf_val != 0 else 1.0
+            )
+
+            # 2. Extract unmapped keys
+            mapped_keys = extract_mapped_keys(cf_mapping)
+            unmapped_keys = [
+                k
+                for k, v in raw_cf_snippet.items()
+                if k not in mapped_keys and isinstance(v, (int, float))
+            ]
+
+            # 3. Globally Classify All Unmapped Keys into SPECIFIC Buckets
+            global_ai_mapping = {}
+
+            if unmapped_keys:
+                print(
+                    f"    [AI PIPELINE] Classifying {len(unmapped_keys)} keys globally for {ticker}..."
+                )
+
+                for key in unmapped_keys:
+                    if "FreeCashFlow" in key or "NetCash" in key:
+                        continue
+
+                    if key in local_ai_cache:
+                        target_bucket = local_ai_cache[key]
+                    else:
+                        top_matches = get_top_buckets(key)  # Global search
+                        result = analyze_key_with_phi3(key, top_matches)
+
+                        if isinstance(result, dict) and result:
+                            target_bucket = list(result.keys())[0]
+                        elif isinstance(result, str):
+                            target_bucket = result
+                        else:
+                            target_bucket = top_matches[0] if top_matches else None
+                            print(
+                                f"      [RECOVERY] Phi-3 hallucinated. Falling back to Vectorizer top match: {target_bucket}"
+                            )
+
+                        local_ai_cache[key] = target_bucket
+
+                    if target_bucket:
+                        if target_bucket not in global_ai_mapping:
+                            global_ai_mapping[target_bucket] = []
+                        global_ai_mapping[target_bucket].append(key)
+
+            # 4. Math Verification
+            boundary_lookup = {
+                "OtherNonCashAdjustments": "OCF",
+                "OtherWorkingCapitalChanges": "OCF",
+                "IncomeTaxPaid": "OCF",
+                "CapExPurchaseOfPPE": "ICF",
+                "PurchaseSaleOfInvestments": "ICF",
+                "OtherInvestingActivities": "ICF",
+                "NetDebtIssuedRepaid": "FCF",
+                "NetStockIssuedRepurchased": "FCF",
+                "DividendsPaid": "FCF",
+                "OtherFinancingActivities": "FCF",
+            }
+
             boundaries = [
                 ("OCF", "Unmapped_Operating", gap_ocf),
                 ("ICF", "Unmapped_Investing", gap_icf),
@@ -1099,61 +1183,27 @@ def validate_financial_statements(
             for b_code, b_col, b_gap in boundaries:
                 if abs(b_gap[date]) > 5:
                     current_gap = b_gap[date]
-                    df_indirect_cf.at[date, b_col] = current_gap
-
-                    existing_keys = extract_mapped_keys(cf_mapping)
-                    unmapped_keys = [
-                        k
-                        for k, v in raw_cf_snippet.items()
-                        if k not in existing_keys and isinstance(v, (int, float))
-                    ]
-
-            if unmapped_keys:
-                print(
-                    f"    [AI PIPELINE] Processing {len(unmapped_keys)} keys via {ai_mode.upper()} for {ticker}..."
-                )
-                ai_sorted_json = {}
-
-                if ai_mode == "cloud":
-                    # Use Gemini (processes all keys at once)
-                    ai_sorted_json = trigger_semantic_router(ticker, unmapped_keys)
-                    if not ai_sorted_json:
-                        ai_sorted_json = {}  # Fallback if cloud fails
-                else:
-                    # Use Local Ollama (processes key-by-key with cache)
-                    for key in unmapped_keys:
-                        if key in local_ai_cache:
-                            cached_bucket = local_ai_cache[key]
-                            if cached_bucket:
-                                if cached_bucket not in ai_sorted_json:
-                                    ai_sorted_json[cached_bucket] = []
-                                ai_sorted_json[cached_bucket].append(key)
-                        else:
-                            top_candidates = runtime.find_nearest_buckets(key)
-                            if top_candidates:
-                                result = runtime.process_with_phi3(key, top_candidates)
-                                if result:
-                                    for bucket, k_list in result.items():
-                                        local_ai_cache[key] = bucket
-                                        if bucket not in ai_sorted_json:
-                                            ai_sorted_json[bucket] = []
-                                        ai_sorted_json[bucket].extend(k_list)
-                                else:
-                                    local_ai_cache[key] = None
-                # Proceed with gap verification if AI successfully mapped keys
-                if ai_sorted_json:
-                    raw_ocf = raw_cf_snippet.get(
-                        "OperatingCashFlow",
-                        raw_cf_snippet.get("operatingCashflow", 1),
-                    )
-                    scaled_ocf = df_indirect_cf.at[date, "TotalOperatingCashFlow"]
-                    current_multiplier = (
-                        round(scaled_ocf / raw_ocf, 6) if raw_ocf != 0 else 1.0
+                    print(
+                        f"    [LEAK DETECTED] {b_code} has {current_gap:.2f} gap. Testing assigned AI keys..."
                     )
 
+                    # Pre-filter the AI mapping so the math engine only tests keys relevant to this specific boundary
+                    targeted_ai_mapping = {
+                        bucket: keys
+                        for bucket, keys in global_ai_mapping.items()
+                        if boundary_lookup.get(bucket) == b_code
+                    }
+
+                    if not targeted_ai_mapping:
+                        print(
+                            f"      [VERDICT] {b_code}: SOURCE_DATA_ANOMALY | No AI keys mapped to this section."
+                        )
+                        continue
+
+                    # Execute the math match with the correct multiplier
                     res = execute_three_way_match(
                         raw_cf_snippet,
-                        ai_sorted_json,
+                        targeted_ai_mapping,
                         b_code,
                         current_gap,
                         current_multiplier,
@@ -1162,75 +1212,54 @@ def validate_financial_statements(
                         f"      [VERDICT] {b_code}: {res['status']} | {res['message']}"
                     )
 
-                    # Database logging
                     if res["status"] == "SUCCESS":
-                        ticket_id = f"{ticker}_{date_str}_{b_code}"
-                        target_bucket = (
-                            list(ai_sorted_json.keys())[0]
-                            if ai_sorted_json
-                            else "Unknown"
-                        )
-
-                        clean_gap = float(current_gap)
-                        clean_keys = [str(k) for k in res["missing_keys_found"]]
-
-                        query = text("""
-                                        INSERT INTO ai_forensic_logs 
-                                        ("TicketID", "Timestamp", "Ticker", "LeakType", "LeakAmount", "MissingKeyFound", "SuggestedCategory", "Reasoning", "Status")
-                                        VALUES (:tid, :ts, :t, :lt, :la, :mk, :sc, :rs, :st)
-                                        ON CONFLICT ("TicketID") DO UPDATE SET "Status" = 'PENDING'
-                                    """)
-
+                        df_indirect_cf.at[date, b_col] = current_gap
                         try:
                             with engine.connect() as conn:
                                 conn.execute(
-                                    query,
+                                    text("""
+                                    INSERT INTO ai_forensic_logs ("TicketID", "Timestamp", "Ticker", "LeakType", "LeakAmount", "MissingKeyFound", "SuggestedCategory", "Reasoning", "Status")
+                                    VALUES (:tid, :ts, :t, :lt, :la, :mk, :sc, :rs, :st) ON CONFLICT ("TicketID") DO UPDATE SET "Status" = 'PENDING'
+                                """),
                                     {
-                                        "tid": ticket_id,
+                                        "tid": f"{ticker}_{date_str}_{b_code}",
                                         "ts": datetime.now().date(),
                                         "t": ticker,
                                         "lt": b_code,
-                                        "la": clean_gap,
-                                        "mk": json.dumps(clean_keys),
-                                        "sc": str(target_bucket),
+                                        "la": float(current_gap),
+                                        "mk": json.dumps(res["missing_keys_found"]),
+                                        "sc": b_code,
                                         "rs": str(res["message"]),
                                         "st": "PENDING",
                                     },
                                 )
                                 conn.commit()
-                            print(
-                                f"      [DB LOG] Successfully logged fix under Ticket {ticket_id}."
-                            )
                         except Exception as e:
-                            print(f"      [DB ERROR] Failed to log fix: {e}")
-                else:
-                    print(
-                        f"      [WARNING] AI Router failed to map keys. Skipping forensic check for this gap."
-                    )
+                            print(f"      [DB ERROR] {e}")
+        # Final Rollforward Updates
+        calc_ocf_f = calc_ocf_base + df_indirect_cf["Unmapped_Operating"]
+        calc_icf_f = calc_icf_base + df_indirect_cf["Unmapped_Investing"]
+        calc_fcf_f = calc_fcf_base + df_indirect_cf["Unmapped_Financing"]
 
-        # Final math updates
-        # Final math updates
-        calc_ocf_final = calc_ocf_base + df_indirect_cf["Unmapped_Operating"]
-        calc_icf_final = calc_icf_base + df_indirect_cf["Unmapped_Investing"]
-        calc_fcf_final = calc_fcf_base + df_indirect_cf["Unmapped_Financing"]
         audit_dict.update(
             {
                 "Indirect_CF_OCF_Match": (
-                    df_indirect_cf["TotalOperatingCashFlow"] - calc_ocf_final
+                    df_indirect_cf["TotalOperatingCashFlow"] - calc_ocf_f
                 ).abs()
                 < 50.0,
                 "Indirect_CF_NetChange_Match": (
                     df_indirect_cf["NetChangeInCash"]
-                    - (calc_ocf_final + calc_icf_final + calc_fcf_final)
+                    - (calc_ocf_f + calc_icf_f + calc_fcf_f)
                 ).abs()
                 < 15.0,
-                "Indirect_CF_Rollforward": True,  # Plugged below
+                "Indirect_CF_Rollforward": True,
             }
         )
 
-    audit_report = pd.DataFrame(audit_dict)
-    return audit_report, (
-        df_indirect_cf.reset_index() if df_indirect_cf is not None else audit_report
+    return pd.DataFrame(audit_dict), (
+        df_indirect_cf.reset_index()
+        if df_indirect_cf is not None
+        else pd.DataFrame(audit_dict)
     )
 
 
@@ -1255,21 +1284,21 @@ def run_etl_pipeline(ai_mode="local"):
         "POWERGRID",
         "ADANIPOWER.NS",
         "TATAPOWER",
-        "JSWENERGY.NS",
-        "ONGC.NS",
-        "IOC",
-        "BPCL",
-        "GAIL.NS",
-        "ADANIGREEN.NS",
-        "IREDA.NS",
-        "NHPC.NS",
-        "ADANIENSOL.NS",
-        "IEX.NS",
-        "TORRENTPOWER.NS",
-        "GUJGASLTD.NS",
-        "PETRONET.NS",
-        "SJVN.NS",
-        "CESC.NS",
+        # "JSWENERGY.NS",
+        # "ONGC.NS",
+        # "IOC",
+        # "BPCL",
+        # "GAIL.NS",
+        # "ADANIGREEN.NS",
+        # "IREDA.NS",
+        # "NHPC.NS",
+        # "ADANIENSOL.NS",
+        # "IEX.NS",
+        # "TORRENTPOWER.NS",
+        # "GUJGASLTD.NS",
+        # "PETRONET.NS",
+        # "SJVN.NS",
+        # "CESC.NS",
     ]
     failed_tickers = []
 
@@ -1278,6 +1307,9 @@ def run_etl_pipeline(ai_mode="local"):
     print("=" * 40)
 
     try:
+        # ADD THIS LINE HERE to boot the PyTorch/Ollama engine:
+        if ai_mode == "local":
+            runtime.load_models()
         for ticker in target_tickers:
             # FETCH UNIFIED PAYLOAD
             payload = fetch_all_financials(ticker)

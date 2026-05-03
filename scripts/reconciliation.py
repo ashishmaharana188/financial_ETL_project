@@ -22,7 +22,7 @@ def execute_three_way_match(
 ):
     """
     Tests every combination of the AI's suggested keys to find the exact subset
-    that mathematically perfectly fills the gap.
+    that mathematically perfectly fills the gap (checking both positive and negative signs).
     """
     boundary_map = {
         "OCF": "OperatingCashFlow",
@@ -52,35 +52,34 @@ def execute_three_way_match(
     keys_list = list(trace_values.keys())
 
     # Safeguard against exponential computation time if API goes crazy
-    if len(keys_list) > 15:
-        keys_list = keys_list[:15]
+    if len(keys_list) > 10:
+        keys_list = keys_list[:10]
 
     best_diff = float("inf")
     best_combo = []
     best_sum = 0.0
 
-    # Test every possible combination size (1 key, 2 keys, 3 keys... up to all keys)
+    # Test every possible combination size (1 key, 2 keys... up to all keys)
     for r in range(1, len(keys_list) + 1):
         for combo in combinations(keys_list, r):
-            combo_sum = sum(trace_values[k] for k in combo)
+            # NEW: Test all possible +/- sign combinations for these specific keys
+            for signs in product([1, -1], repeat=r):
+                combo_sum = sum(trace_values[k] * sign for k, sign in zip(combo, signs))
 
-            # Check direct match OR sign-flipped match (common in accounting APIs)
-            if math.isclose(combo_sum, target_gap, abs_tol=2.0) or math.isclose(
-                -combo_sum, target_gap, abs_tol=2.0
-            ):
-                return {
-                    "status": "SUCCESS",
-                    "missing_keys_found": list(combo),
-                    "evidence": {k: trace_values[k] for k in combo},
-                    "message": f"Exact subset match found! Keys {list(combo)} sum perfectly to fix the gap.",
-                }
+                if math.isclose(combo_sum, target_gap, abs_tol=2.0):
+                    return {
+                        "status": "SUCCESS",
+                        "missing_keys_found": list(combo),
+                        "evidence": {k: trace_values[k] for k in combo},
+                        "message": f"Exact subset match found! Keys {list(combo)} sum perfectly to fix the gap.",
+                    }
 
-            # Track the closest match for our anomaly debugging log
-            diff = min(abs(target_gap - combo_sum), abs(target_gap - (-combo_sum)))
-            if diff < best_diff:
-                best_diff = diff
-                best_combo = list(combo)
-                best_sum = combo_sum
+                # Track the closest match for our anomaly debugging log
+                diff = abs(target_gap - combo_sum)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_combo = list(combo)
+                    best_sum = combo_sum
 
     return {
         "status": "SOURCE_DATA_ANOMALY",

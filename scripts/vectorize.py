@@ -3,9 +3,12 @@ from sentence_transformers import util
 from scripts.model_runtime import runtime
 
 
-def get_top_buckets(unmapped_key, config_path="mapping_config.json", top_k=5):
+def get_top_buckets(
+    unmapped_key, config_path="mapping_config.json", top_k=5, candidates=None
+):
     """
     Uses BGE-M3 (via PyTorch) to find the top mathematically similar buckets for a given key.
+    If 'candidates' is provided, it restricts the search to that specific section.
     """
     print(f"[VECTOR SEARCH] Analyzing unmapped key: '{unmapped_key}'...")
 
@@ -15,10 +18,16 @@ def get_top_buckets(unmapped_key, config_path="mapping_config.json", top_k=5):
 
     # We only care about the parent bucket names for routing
     target_map = config.get("normalized_indirect_cf_synonym_map", {})
-    bucket_names = list(target_map.keys())
+
+    # --- TARGETED FILTERING LOGIC ---
+    # If a specific section's candidates are provided (e.g., only OCF), filter the list.
+    if candidates:
+        bucket_names = [b for b in candidates if b in target_map]
+    else:
+        bucket_names = list(target_map.keys())
 
     if not bucket_names:
-        print("      [ERROR] No buckets found in mapping_config.json.")
+        print("      [ERROR] No valid buckets found for vectorization.")
         return []
 
     # Ensure models are loaded in VRAM
@@ -43,15 +52,28 @@ def get_top_buckets(unmapped_key, config_path="mapping_config.json", top_k=5):
         similarities.append((bucket_names[i], score.item()))
 
     # 5. Sort by highest similarity and grab the top_k
+    # (Use actual_k to prevent index errors if the filtered list is smaller than top_k)
     similarities.sort(key=lambda x: x[1], reverse=True)
-    top_matches = [match[0] for match in similarities[:top_k]]
+    actual_k = min(top_k, len(similarities))
+    top_matches = [match[0] for match in similarities[:actual_k]]
 
-    print(f"[VECTOR SEARCH] Top {top_k} matches: {top_matches}")
+    print(f"[VECTOR SEARCH] Top {actual_k} matches: {top_matches}")
     return top_matches
 
 
 # Example usage (for testing the file directly):
 if __name__ == "__main__":
     test_key = "ProceedsFromMaturitiesOfInvestments"
+
+    print("\n--- Standard Search ---")
     matches = get_top_buckets(test_key)
-    print(f"Matches for {test_key}: {matches}")
+
+    print("\n--- Targeted Search (Investing Only) ---")
+    targeted_matches = get_top_buckets(
+        test_key,
+        candidates=[
+            "CapExPurchaseOfPPE",
+            "PurchaseSaleOfInvestments",
+            "OtherInvestingActivities",
+        ],
+    )
