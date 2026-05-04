@@ -24,6 +24,8 @@ from scripts.model_runtime import runtime
 from scripts.model_runtime import runtime
 from scripts.vectorize import get_top_buckets
 from scripts.reasoning import analyze_key_with_phi3
+import streamlit as st
+from datetime import datetime
 
 runtime.load_models()
 
@@ -989,7 +991,7 @@ def validate_financial_statements(
     cf_mapping=None,
     ai_mode="local",
 ):
-    print("RUNNING 3-STATEMENT VALIDATION")
+    st.subheader(f"RUNNING 3-STATEMENT VALIDATION: {ticker}")
 
     # 1. Align Statements for Multi-Point Comparison
     df_is = df_is.set_index("ReportDate")
@@ -1024,32 +1026,81 @@ def validate_financial_statements(
         ],
     }
 
-    print("\n--- DIRECT STATEMENTS AUDIT ---")
+    st.markdown("### --- DIRECT STATEMENTS AUDIT ---")
+
+    # --- BALANCE SHEET AUDIT ---
     bs_calc = df_bs["TotalLiabilitiesNetMinorityInterest"] + df_bs["StockholdersEquity"]
     bs_gap = df_bs["TotalAssets"] - bs_calc
     bs_check = bs_gap.abs() <= 10
 
+    if bs_check.all():
+        st.success("✅ Balance Sheet Equation (Assets = L + E): PERFECT MATCH")
+    else:
+        st.error("❌ BALANCE SHEET LEAK DETECTED:")
+        for date, is_valid in bs_check.items():
+            if not is_valid:
+                st.write(
+                    f"   -> [{date}] Assets: {df_bs.at[date, 'TotalAssets']:.2f} | Calculated L+E: {bs_calc[date]:.2f} | Gap: {bs_gap[date]:.2f}"
+                )
+
+    # --- INCOME STATEMENT AUDIT ---
     is_calc = df_is["GrossProfit"] - df_is["OperatingExpense"]
-    is_check = (df_is["OperatingIncome"] - is_calc).abs() < 1
+    is_gap = df_is["OperatingIncome"] - is_calc
+    is_check = is_gap.abs() < 1
+
+    if is_check.all():
+        st.success("✅ Income Statement Equation (GP - Opex = OpInc): PERFECT MATCH")
+    else:
+        st.error("❌ INCOME STATEMENT LEAK DETECTED:")
+        for date, is_valid in is_check.items():
+            if not is_valid:
+                st.write(
+                    f"   -> [{date}] OpInc: {df_is.at[date, 'OperatingIncome']:.2f} | Calculated (GP-Opex): {is_calc[date]:.2f} | Gap: {is_gap[date]:.2f}"
+                )
+
+    # --- BALANCE SHEET TO CASH FLOW LINK AUDIT ---
+    common_bs_cf = df_cf.index.intersection(df_bs.index)
+    bs_aggregate = df_bs.loc[common_bs_cf, "CashCashEquivalentsAndShortTermInvestments"]
+    cf_cash = df_cf.loc[common_bs_cf, "EndingCashBalance"]
+
+    bs_cf_gap = cf_cash - bs_aggregate
+    bs_cf_check = (bs_cf_gap.abs() < 5.0) | (cf_cash <= bs_aggregate + 5.0)
+
+    if bs_cf_check.all():
+        st.success("✅ BS/CF Cash Link (Ending Cash): PERFECT MATCH")
+    else:
+        st.warning("⚠️ BS/CF LINK LEAK DETECTED:")
+        for date, is_valid in bs_cf_check.items():
+            if not is_valid:
+                st.write(
+                    f"   -> [{date}] CF Ending Cash: {cf_cash[date]:.2f} | BS Cash: {bs_aggregate[date]:.2f} | Gap: {bs_cf_gap[date]:.2f}"
+                )
+
+    # --- DIRECT CASH FLOW AUDIT ---
+    cf_calc = df_cf["CashReceipts"] - df_cf["CashDisbursements"]
+    cf_gap = df_cf["CashFromOperations"] - cf_calc
+    cf_check = cf_gap.abs() < 1
+
+    if cf_check.all():
+        st.success("✅ Direct Cash Flow Equation: PERFECT MATCH")
+    else:
+        st.warning("⚠️ DIRECT CASH FLOW LEAK DETECTED:")
+        for date, is_valid in cf_check.items():
+            if not is_valid:
+                st.write(
+                    f"   -> [{date}] CFO: {df_cf.at[date, 'CashFromOperations']:.2f} | Calc (Rec-Disb): {cf_calc[date]:.2f} | Gap: {cf_gap[date]:.2f}"
+                )
 
     audit_dict = {
         "BS_IsValid": bs_check,
         "IS_IsValid": is_check,
-        "BS_CF_Link_Match": (
-            df_cf["EndingCashBalance"]
-            - df_bs["CashCashEquivalentsAndShortTermInvestments"]
-        ).abs()
-        < 5.0,
-        "Direct_CF_Match": (
-            df_cf["CashFromOperations"]
-            - (df_cf["CashReceipts"] - df_cf["CashDisbursements"])
-        ).abs()
-        < 1,
+        "BS_CF_Link_Match": bs_cf_check,
+        "Direct_CF_Match": cf_check,
     }
 
     # 3. Indirect Cash Flow Forensic Audit
     if df_indirect_cf is not None:
-        print("\n--- TARGETED INDIRECT CASH FLOW FORENSIC AUDIT ---")
+        st.markdown("### --- TARGETED INDIRECT CASH FLOW FORENSIC AUDIT ---")
         local_ai_cache = {}
 
         # Calculation Base (Varies by data source)
@@ -1129,8 +1180,8 @@ def validate_financial_statements(
             global_ai_mapping = {}
 
             if unmapped_keys:
-                print(
-                    f"    [AI PIPELINE] Classifying {len(unmapped_keys)} keys globally for {ticker}..."
+                st.info(
+                    f"🧠 **[AI PIPELINE]** Classifying {len(unmapped_keys)} unmapped keys globally for {ticker}..."
                 )
 
                 for key in unmapped_keys:
@@ -1149,8 +1200,8 @@ def validate_financial_statements(
                             target_bucket = result
                         else:
                             target_bucket = top_matches[0] if top_matches else None
-                            print(
-                                f"      [RECOVERY] Phi-3 hallucinated. Falling back to Vectorizer top match: {target_bucket}"
+                            st.warning(
+                                f"⚠️ [RECOVERY] AI hallucinated. Falling back to Vectorizer top match: {target_bucket}"
                             )
 
                         local_ai_cache[key] = target_bucket
@@ -1183,8 +1234,8 @@ def validate_financial_statements(
             for b_code, b_col, b_gap in boundaries:
                 if abs(b_gap[date]) > 5:
                     current_gap = b_gap[date]
-                    print(
-                        f"    [LEAK DETECTED] {b_code} has {current_gap:.2f} gap. Testing assigned AI keys..."
+                    st.write(
+                        f"🔍 **[LEAK DETECTED]** {b_code} has **{current_gap:.2f}** gap. Testing assigned AI keys..."
                     )
 
                     # Pre-filter the AI mapping so the math engine only tests keys relevant to this specific boundary
@@ -1195,8 +1246,8 @@ def validate_financial_statements(
                     }
 
                     if not targeted_ai_mapping:
-                        print(
-                            f"      [VERDICT] {b_code}: SOURCE_DATA_ANOMALY | No AI keys mapped to this section."
+                        st.write(
+                            f"   -> *[VERDICT]* {b_code}: SOURCE_DATA_ANOMALY | No AI keys mapped to this section."
                         )
                         continue
 
@@ -1208,11 +1259,11 @@ def validate_financial_statements(
                         current_gap,
                         current_multiplier,
                     )
-                    print(
-                        f"      [VERDICT] {b_code}: {res['status']} | {res['message']}"
-                    )
 
                     if res["status"] == "SUCCESS":
+                        st.success(
+                            f"   -> *[VERDICT]* {b_code}: {res['status']} | {res['message']}"
+                        )
                         df_indirect_cf.at[date, b_col] = current_gap
                         try:
                             with engine.connect() as conn:
@@ -1235,7 +1286,12 @@ def validate_financial_statements(
                                 )
                                 conn.commit()
                         except Exception as e:
-                            print(f"      [DB ERROR] {e}")
+                            st.error(f"   -> *[DB ERROR]* {e}")
+                    else:
+                        st.warning(
+                            f"   -> *[VERDICT]* {b_code}: {res['status']} | {res['message']}"
+                        )
+
         # Final Rollforward Updates
         calc_ocf_f = calc_ocf_base + df_indirect_cf["Unmapped_Operating"]
         calc_icf_f = calc_icf_base + df_indirect_cf["Unmapped_Investing"]
@@ -1280,10 +1336,10 @@ indirect_cf_buckets = [
 
 def run_etl_pipeline(ai_mode="local"):
     target_tickers = [
-        "NTPC.NS",
-        "POWERGRID",
+        # "NTPC.NS",
+        # "POWERGRID",
         "ADANIPOWER.NS",
-        "TATAPOWER",
+        # "TATAPOWER",
         # "JSWENERGY.NS",
         # "ONGC.NS",
         # "IOC",
