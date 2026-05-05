@@ -9,6 +9,8 @@ from sqlalchemy import (
     Boolean,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB, insert
+from sqlalchemy import Column, String, Date, MetaData, Table
 
 # Setup Engine
 engine = create_engine("postgresql+psycopg2://postgres:123456@localhost:5432/postgres")
@@ -28,6 +30,18 @@ ai_forensic_logs = Table(
     Column("SuggestedCategory", String(200)),
     Column("Reasoning", String(1000)),
     Column("Status", String(50), default="PENDING"),
+)
+
+
+# Define the Raw JSONB Vault (Bronze Layer)
+raw_financials = Table(
+    "raw_financials",
+    metadata,
+    Column("DataSource", String(50)),
+    Column("Ticker", String(50), primary_key=True),
+    Column("ReportDate", Date, primary_key=True),
+    Column("StatementType", String(50), primary_key=True),  # e.g., 'IS', 'BS', 'CF'
+    Column("RawData", JSONB),
 )
 
 # Define Tables

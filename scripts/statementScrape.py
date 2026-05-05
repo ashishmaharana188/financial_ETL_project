@@ -17,7 +17,7 @@ from scripts.reconciliation import extract_mapped_keys, execute_three_way_match
 from scripts.ai_agent import trigger_semantic_router
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
-from scripts.database import engine
+from scripts.database import engine, raw_financials
 from scripts.reconciliation import extract_mapped_keys, execute_three_way_match
 from sqlalchemy import text
 from scripts.model_runtime import runtime
@@ -561,6 +561,55 @@ def map_statement_via_dictionary(df, synonym_map, target_columns, bucket_columns
     return pd.DataFrame(mapped_data).T
 
 
+# ---------------------------------------------------------
+# FUNCTION 1: BRONZE VAULT STORAGE (Fixed .dt Error)
+# ---------------------------------------------------------
+def store_raw_data_jsonb(
+    ticker, data_source, statement_type, raw_df, conn_engine, table_def
+):
+    if raw_df is None or (isinstance(raw_df, pd.DataFrame) and raw_df.empty):
+        return
+
+    df = pd.DataFrame(raw_df) if isinstance(raw_df, dict) else raw_df.copy()
+    df = df.T
+    df.columns = [to_pascal_case(str(col)) for col in df.columns]
+
+    # FIXED: DatetimeIndex does not need the .dt accessor
+    df.index = (pd.to_datetime(df.index) + pd.offsets.MonthEnd(0)).strftime("%Y-%m-%d")
+
+    records = []
+    for date_str, row in df.iterrows():
+        clean_row = row.dropna().to_dict()
+        records.append(
+            {
+                "DataSource": data_source,
+                "Ticker": ticker,
+                "ReportDate": date_str,
+                "StatementType": statement_type,
+                "RawData": clean_row,
+            }
+        )
+
+    if not records:
+        return
+
+    insert_stmt = insert(table_def).values(records)
+    upsert_stmt = insert_stmt.on_conflict_do_update(
+        index_elements=["Ticker", "ReportDate", "StatementType"],
+        set_={
+            "RawData": insert_stmt.excluded.RawData,
+            "DataSource": insert_stmt.excluded.DataSource,
+        },
+    )
+
+    with conn_engine.begin() as conn:
+        conn.execute(upsert_stmt)
+
+    print(
+        f"      [BRONZE VAULT] Saved {len(records)} raw {statement_type} records for {ticker}."
+    )
+
+
 ## FALLBACK FUNTIONS
 
 
@@ -978,116 +1027,72 @@ def apply_indirect_cash_flow_fallbacks(
 
 
 def validate_financial_statements(
-    df_is,
-    df_bs,
-    df_cf,
-    df_indirect_cf=None,
-    ticker=None,
-    raw_df_is=None,
-    raw_df_bs=None,
-    raw_df_cf=None,
-    is_mapping=None,
-    bs_mapping=None,
-    cf_mapping=None,
-    ai_mode="local",
+    df_is, df_bs, df_cf, df_indirect_cf=None, ticker=None
 ):
-    st.subheader(f"RUNNING 3-STATEMENT VALIDATION: {ticker}")
+    print(f"\n{'='*40}")
+    print(f"RUNNING 3-STATEMENT VALIDATION: {ticker}")
+    print(f"{'='*40}")
 
-    # 1. Align Statements for Multi-Point Comparison
     df_is = df_is.set_index("ReportDate")
     df_bs = df_bs.set_index("ReportDate")
     df_cf = df_cf.set_index("ReportDate")
     if df_indirect_cf is not None:
         df_indirect_cf = df_indirect_cf.set_index("ReportDate")
 
-    # 2. Hierarchical Grouping (Based on mapping_config_2.json)
-    # This prevents the AI from looking in the wrong section for a gap fix.
-    SECTION_BUCKETS = {
-        "OCF": [
-            "NetIncome",
-            "DepreciationAndAmortization",
-            "OtherNonCashAdjustments",
-            "ChangeInAccountsReceivable",
-            "ChangeInInventory",
-            "ChangeInAccountsPayable",
-            "OtherWorkingCapitalChanges",
-            "IncomeTaxPaid",
-        ],
-        "ICF": [
-            "CapExPurchaseOfPPE",
-            "PurchaseSaleOfInvestments",
-            "OtherInvestingActivities",
-        ],
-        "FCF": [
-            "NetDebtIssuedRepaid",
-            "NetStockIssuedRepurchased",
-            "DividendsPaid",
-            "OtherFinancingActivities",
-        ],
-    }
+    print("\n--- DIRECT STATEMENTS AUDIT ---")
 
-    st.markdown("### --- DIRECT STATEMENTS AUDIT ---")
-
-    # --- BALANCE SHEET AUDIT ---
     bs_calc = df_bs["TotalLiabilitiesNetMinorityInterest"] + df_bs["StockholdersEquity"]
     bs_gap = df_bs["TotalAssets"] - bs_calc
     bs_check = bs_gap.abs() <= 10
-
     if bs_check.all():
-        st.success("✅ Balance Sheet Equation (Assets = L + E): PERFECT MATCH")
+        print("✅ Balance Sheet Equation (Assets = L + E): PERFECT MATCH")
     else:
-        st.error("❌ BALANCE SHEET LEAK DETECTED:")
+        print("❌ BALANCE SHEET LEAK DETECTED:")
         for date, is_valid in bs_check.items():
             if not is_valid:
-                st.write(
+                print(
                     f"   -> [{date}] Assets: {df_bs.at[date, 'TotalAssets']:.2f} | Calculated L+E: {bs_calc[date]:.2f} | Gap: {bs_gap[date]:.2f}"
                 )
 
-    # --- INCOME STATEMENT AUDIT ---
     is_calc = df_is["GrossProfit"] - df_is["OperatingExpense"]
     is_gap = df_is["OperatingIncome"] - is_calc
     is_check = is_gap.abs() < 1
-
     if is_check.all():
-        st.success("✅ Income Statement Equation (GP - Opex = OpInc): PERFECT MATCH")
+        print("✅ Income Statement Equation (GP - Opex = OpInc): PERFECT MATCH")
     else:
-        st.error("❌ INCOME STATEMENT LEAK DETECTED:")
+        print("❌ INCOME STATEMENT LEAK DETECTED:")
         for date, is_valid in is_check.items():
             if not is_valid:
-                st.write(
+                print(
                     f"   -> [{date}] OpInc: {df_is.at[date, 'OperatingIncome']:.2f} | Calculated (GP-Opex): {is_calc[date]:.2f} | Gap: {is_gap[date]:.2f}"
                 )
 
-    # --- BALANCE SHEET TO CASH FLOW LINK AUDIT ---
     common_bs_cf = df_cf.index.intersection(df_bs.index)
     bs_aggregate = df_bs.loc[common_bs_cf, "CashCashEquivalentsAndShortTermInvestments"]
     cf_cash = df_cf.loc[common_bs_cf, "EndingCashBalance"]
-
     bs_cf_gap = cf_cash - bs_aggregate
     bs_cf_check = (bs_cf_gap.abs() < 5.0) | (cf_cash <= bs_aggregate + 5.0)
 
     if bs_cf_check.all():
-        st.success("✅ BS/CF Cash Link (Ending Cash): PERFECT MATCH")
+        print("✅ BS/CF Cash Link (Ending Cash): PERFECT MATCH")
     else:
-        st.warning("⚠️ BS/CF LINK LEAK DETECTED:")
+        print("⚠️ BS/CF LINK LEAK DETECTED:")
         for date, is_valid in bs_cf_check.items():
             if not is_valid:
-                st.write(
+                print(
                     f"   -> [{date}] CF Ending Cash: {cf_cash[date]:.2f} | BS Cash: {bs_aggregate[date]:.2f} | Gap: {bs_cf_gap[date]:.2f}"
                 )
 
-    # --- DIRECT CASH FLOW AUDIT ---
     cf_calc = df_cf["CashReceipts"] - df_cf["CashDisbursements"]
     cf_gap = df_cf["CashFromOperations"] - cf_calc
     cf_check = cf_gap.abs() < 1
-
     if cf_check.all():
-        st.success("✅ Direct Cash Flow Equation: PERFECT MATCH")
+        print("✅ Direct Cash Flow Equation: PERFECT MATCH")
     else:
-        st.warning("⚠️ DIRECT CASH FLOW LEAK DETECTED:")
+        print("⚠️ DIRECT CASH FLOW LEAK DETECTED:")
         for date, is_valid in cf_check.items():
             if not is_valid:
-                st.write(
+                print(
                     f"   -> [{date}] CFO: {df_cf.at[date, 'CashFromOperations']:.2f} | Calc (Rec-Disb): {cf_calc[date]:.2f} | Gap: {cf_gap[date]:.2f}"
                 )
 
@@ -1098,12 +1103,8 @@ def validate_financial_statements(
         "Direct_CF_Match": cf_check,
     }
 
-    # 3. Indirect Cash Flow Forensic Audit
     if df_indirect_cf is not None:
-        st.markdown("### --- TARGETED INDIRECT CASH FLOW FORENSIC AUDIT ---")
-        local_ai_cache = {}
-
-        # Calculation Base (Varies by data source)
+        print("\n--- TARGETED INDIRECT CASH FLOW FORENSIC AUDIT ---")
         is_screener = ("DataSource" in df_indirect_cf.columns) and (
             str(df_indirect_cf["DataSource"].iloc[0]).lower() == "screener"
         )
@@ -1143,172 +1144,65 @@ def validate_financial_statements(
         df_indirect_cf["Unmapped_Financing"] = 0.0
 
         for date in df_indirect_cf.index:
-            date_str = date.strftime("%Y-%m-%d") if not isinstance(date, str) else date
-            raw_cf_snippet = (
-                raw_df_cf.loc[date_str].dropna().to_dict()
-                if (raw_df_cf is not None and date_str in raw_df_cf.index)
-                else {}
-            )
-
-            # 1. THE MISSING LINK: Robust Multiplier Anchor
-            raw_ocf_val = 0
-            for k, v in raw_cf_snippet.items():
-                # Strip all spaces, underscores, and lowercase it for a guaranteed match
-                clean_key = str(k).replace(" ", "").replace("_", "").lower()
-                if clean_key in [
-                    "operatingcashflow",
-                    "cashfromoperatingactivity",
-                    "netcashfromoperatingactivities",
-                ]:
-                    raw_ocf_val = v
-                    break
-
-            scaled_ocf_val = df_indirect_cf.at[date, "TotalOperatingCashFlow"]
-            current_multiplier = (
-                round(scaled_ocf_val / raw_ocf_val, 6) if raw_ocf_val != 0 else 1.0
-            )
-
-            # 2. Extract unmapped keys
-            mapped_keys = extract_mapped_keys(cf_mapping)
-            unmapped_keys = [
-                k
-                for k, v in raw_cf_snippet.items()
-                if k not in mapped_keys and isinstance(v, (int, float))
-            ]
-
-            # 3. Globally Classify All Unmapped Keys into SPECIFIC Buckets
-            global_ai_mapping = {}
-
-            if unmapped_keys:
-                st.info(
-                    f"🧠 **[AI PIPELINE]** Classifying {len(unmapped_keys)} unmapped keys globally for {ticker}..."
+            if abs(gap_ocf[date]) > 5:
+                df_indirect_cf.at[date, "Unmapped_Operating"] = gap_ocf[date]
+                print(
+                    f"   -> [{date}] OCF Leak: Plugging {gap_ocf[date]:.2f} into Unmapped_Operating"
+                )
+            if abs(gap_icf[date]) > 5:
+                df_indirect_cf.at[date, "Unmapped_Investing"] = gap_icf[date]
+                print(
+                    f"   -> [{date}] ICF Leak: Plugging {gap_icf[date]:.2f} into Unmapped_Investing"
+                )
+            if abs(gap_fcf[date]) > 5:
+                df_indirect_cf.at[date, "Unmapped_Financing"] = gap_fcf[date]
+                print(
+                    f"   -> [{date}] FCF Leak: Plugging {gap_fcf[date]:.2f} into Unmapped_Financing"
                 )
 
-                for key in unmapped_keys:
-                    if "FreeCashFlow" in key or "NetCash" in key:
-                        continue
+        calc_ocf_final = calc_ocf_base + df_indirect_cf["Unmapped_Operating"]
+        calc_icf_final = calc_icf_base + df_indirect_cf["Unmapped_Investing"]
+        calc_fcf_final = calc_fcf_base + df_indirect_cf["Unmapped_Financing"]
 
-                    if key in local_ai_cache:
-                        target_bucket = local_ai_cache[key]
-                    else:
-                        top_matches = get_top_buckets(key)  # Global search
-                        result = analyze_key_with_phi3(key, top_matches)
+        indirect_ocf_check = (
+            df_indirect_cf["TotalOperatingCashFlow"] - calc_ocf_final
+        ).abs() <= (df_indirect_cf["TotalOperatingCashFlow"].abs() * 0.05)
 
-                        if isinstance(result, dict) and result:
-                            target_bucket = list(result.keys())[0]
-                        elif isinstance(result, str):
-                            target_bucket = result
-                        else:
-                            target_bucket = top_matches[0] if top_matches else None
-                            st.warning(
-                                f"⚠️ [RECOVERY] AI hallucinated. Falling back to Vectorizer top match: {target_bucket}"
-                            )
+        dust_tolerance = 15.0
+        calc_net_change = calc_ocf_final + calc_icf_final + calc_fcf_final
+        indirect_net_change_check = (
+            df_indirect_cf["NetChangeInCash"] - calc_net_change
+        ).abs() <= dust_tolerance
 
-                        local_ai_cache[key] = target_bucket
+        calc_ending = (
+            df_indirect_cf["BeginningCash"]
+            + df_indirect_cf["NetChangeInCash"]
+            + df_indirect_cf["EffectOfExchangeRates"].fillna(0)
+        )
+        df_indirect_cf["Unmapped_Rollforward"] = 0.0
 
-                    if target_bucket:
-                        if target_bucket not in global_ai_mapping:
-                            global_ai_mapping[target_bucket] = []
-                        global_ai_mapping[target_bucket].append(key)
+        rollforward_gap = df_indirect_cf["EndingCash"] - calc_ending
 
-            # 4. Math Verification
-            boundary_lookup = {
-                "OtherNonCashAdjustments": "OCF",
-                "OtherWorkingCapitalChanges": "OCF",
-                "IncomeTaxPaid": "OCF",
-                "CapExPurchaseOfPPE": "ICF",
-                "PurchaseSaleOfInvestments": "ICF",
-                "OtherInvestingActivities": "ICF",
-                "NetDebtIssuedRepaid": "FCF",
-                "NetStockIssuedRepurchased": "FCF",
-                "DividendsPaid": "FCF",
-                "OtherFinancingActivities": "FCF",
-            }
+        for date in df_indirect_cf.index:
+            if (
+                abs(rollforward_gap[date]) > dust_tolerance
+                or df_indirect_cf.at[date, "BeginningCash"] == 0
+            ):
+                print(
+                    f"   -> [{date}] Rollforward Mismatch: Plugging {rollforward_gap[date]:.2f} into Unmapped_Rollforward"
+                )
+                df_indirect_cf.at[date, "Unmapped_Rollforward"] = rollforward_gap[date]
 
-            boundaries = [
-                ("OCF", "Unmapped_Operating", gap_ocf),
-                ("ICF", "Unmapped_Investing", gap_icf),
-                ("FCF", "Unmapped_Financing", gap_fcf),
-            ]
-
-            for b_code, b_col, b_gap in boundaries:
-                if abs(b_gap[date]) > 5:
-                    current_gap = b_gap[date]
-                    st.write(
-                        f"🔍 **[LEAK DETECTED]** {b_code} has **{current_gap:.2f}** gap. Testing assigned AI keys..."
-                    )
-
-                    # Pre-filter the AI mapping so the math engine only tests keys relevant to this specific boundary
-                    targeted_ai_mapping = {
-                        bucket: keys
-                        for bucket, keys in global_ai_mapping.items()
-                        if boundary_lookup.get(bucket) == b_code
-                    }
-
-                    if not targeted_ai_mapping:
-                        st.write(
-                            f"   -> *[VERDICT]* {b_code}: SOURCE_DATA_ANOMALY | No AI keys mapped to this section."
-                        )
-                        continue
-
-                    # Execute the math match with the correct multiplier
-                    res = execute_three_way_match(
-                        raw_cf_snippet,
-                        targeted_ai_mapping,
-                        b_code,
-                        current_gap,
-                        current_multiplier,
-                    )
-
-                    if res["status"] == "SUCCESS":
-                        st.success(
-                            f"   -> *[VERDICT]* {b_code}: {res['status']} | {res['message']}"
-                        )
-                        df_indirect_cf.at[date, b_col] = current_gap
-                        try:
-                            with engine.connect() as conn:
-                                conn.execute(
-                                    text("""
-                                    INSERT INTO ai_forensic_logs ("TicketID", "Timestamp", "Ticker", "LeakType", "LeakAmount", "MissingKeyFound", "SuggestedCategory", "Reasoning", "Status")
-                                    VALUES (:tid, :ts, :t, :lt, :la, :mk, :sc, :rs, :st) ON CONFLICT ("TicketID") DO UPDATE SET "Status" = 'PENDING'
-                                """),
-                                    {
-                                        "tid": f"{ticker}_{date_str}_{b_code}",
-                                        "ts": datetime.now().date(),
-                                        "t": ticker,
-                                        "lt": b_code,
-                                        "la": float(current_gap),
-                                        "mk": json.dumps(res["missing_keys_found"]),
-                                        "sc": b_code,
-                                        "rs": str(res["message"]),
-                                        "st": "PENDING",
-                                    },
-                                )
-                                conn.commit()
-                        except Exception as e:
-                            st.error(f"   -> *[DB ERROR]* {e}")
-                    else:
-                        st.warning(
-                            f"   -> *[VERDICT]* {b_code}: {res['status']} | {res['message']}"
-                        )
-
-        # Final Rollforward Updates
-        calc_ocf_f = calc_ocf_base + df_indirect_cf["Unmapped_Operating"]
-        calc_icf_f = calc_icf_base + df_indirect_cf["Unmapped_Investing"]
-        calc_fcf_f = calc_fcf_base + df_indirect_cf["Unmapped_Financing"]
+        calc_ending_final = calc_ending + df_indirect_cf["Unmapped_Rollforward"]
+        indirect_rollforward_check = (
+            df_indirect_cf["EndingCash"] - calc_ending_final
+        ).abs() <= dust_tolerance
 
         audit_dict.update(
             {
-                "Indirect_CF_OCF_Match": (
-                    df_indirect_cf["TotalOperatingCashFlow"] - calc_ocf_f
-                ).abs()
-                < 50.0,
-                "Indirect_CF_NetChange_Match": (
-                    df_indirect_cf["NetChangeInCash"]
-                    - (calc_ocf_f + calc_icf_f + calc_fcf_f)
-                ).abs()
-                < 15.0,
-                "Indirect_CF_Rollforward": True,
+                "Indirect_CF_OCF_Match": indirect_ocf_check,
+                "Indirect_CF_NetChange_Match": indirect_net_change_check,
+                "Indirect_CF_Rollforward": indirect_rollforward_check,
             }
         )
 
@@ -1424,8 +1318,40 @@ def run_etl_pipeline(ai_mode="local"):
                 dfBalanceSheetQ = None
                 dfCashFlowQ = None
 
-            # UNIFIED CLEANING & MAPPING
-            print(f"[{ticker}] Cleaning and Mapping Data...")
+            # ==========================================
+            # BRONZE LAYER: SAVE RAW DATA TO JSONB VAULT
+            # ==========================================
+            print(f"[{ticker}] Backing up raw data to JSONB Vault...")
+
+            # Save Yearly Statements
+            store_raw_data_jsonb(
+                ticker, source, "IS_Y", dfIncomeStatementY, engine, raw_financials
+            )
+            store_raw_data_jsonb(
+                ticker, source, "BS_Y", dfBalanceSheetY, engine, raw_financials
+            )
+            store_raw_data_jsonb(
+                ticker, source, "CF_Y", dfCashFlowY, engine, raw_financials
+            )
+
+            # Save Quarterly Statements (if they exist)
+            if dfIncomeStatementQ is not None:
+                store_raw_data_jsonb(
+                    ticker, source, "IS_Q", dfIncomeStatementQ, engine, raw_financials
+                )
+            if dfBalanceSheetQ is not None:
+                store_raw_data_jsonb(
+                    ticker, source, "BS_Q", dfBalanceSheetQ, engine, raw_financials
+                )
+            if dfCashFlowQ is not None:
+                store_raw_data_jsonb(
+                    ticker, source, "CF_Q", dfCashFlowQ, engine, raw_financials
+                )
+
+            # ==========================================
+            # SILVER LAYER: UNIFIED CLEANING & MAPPING
+            # ==========================================
+            print(f"[{ticker}] Cleaning and Mapping Data for Silver Tables...")
 
             if source == "vantage":
                 stmt_currency = "USD"
@@ -1659,17 +1585,6 @@ def run_etl_pipeline(ai_mode="local"):
                     clean_yearly_cash_flow,
                     clean_yearly_indirect_cash_flow,
                     ticker=ticker,
-                    raw_df_is=(
-                        dfIncomeStatementY.T if dfIncomeStatementY is not None else None
-                    ),
-                    raw_df_bs=(
-                        dfBalanceSheetY.T if dfBalanceSheetY is not None else None
-                    ),
-                    raw_df_cf=dfCashFlowY.T if dfCashFlowY is not None else None,
-                    is_mapping=normalized_is_synonym_map,
-                    bs_mapping=normalized_bs_synonym_map,
-                    cf_mapping=normalized_indirect_cf_synonym_map,
-                    ai_mode=ai_mode,
                 )
             )
 
