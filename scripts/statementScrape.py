@@ -200,7 +200,7 @@ def get_screener_financials(ticker, report_type="yearly"):
         }
     )
 
-    url = f"https://www.screener.in/company/{ticker}/"
+    url = f"https://www.screener.in/company/{ticker}/consolidated/"
     response = session.get(url)
 
     if response.status_code != 200:
@@ -261,7 +261,7 @@ def get_screener_financials(ticker, report_type="yearly"):
                 button = row_label_cell.find("button")
                 if button:
                     safe_parent = urllib.parse.quote(row_label)
-                    api_url = f"https://www.screener.in/api/company/{company_id}/schedules/?parent={safe_parent}&section={section_id}"
+                    api_url = f"https://www.screener.in/api/company/{company_id}/schedules/?parent={safe_parent}&section={section_id}&consolidated=true"
 
                     try:
                         # ARCHITECTURAL FIX: Add a half-second delay so the bot doesn't ban us during the loop
