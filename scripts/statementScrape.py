@@ -561,9 +561,6 @@ def map_statement_via_dictionary(df, synonym_map, target_columns, bucket_columns
     return pd.DataFrame(mapped_data).T
 
 
-# ---------------------------------------------------------
-# FUNCTION 1: BRONZE VAULT STORAGE (Fixed .dt Error)
-# ---------------------------------------------------------
 def store_raw_data_jsonb(
     ticker, data_source, statement_type, raw_df, conn_engine, table_def
 ):
@@ -572,10 +569,12 @@ def store_raw_data_jsonb(
 
     df = pd.DataFrame(raw_df) if isinstance(raw_df, dict) else raw_df.copy()
     df = df.T
+
     df.columns = [to_pascal_case(str(col)) for col in df.columns]
 
-    # FIXED: DatetimeIndex does not need the .dt accessor
-    df.index = (pd.to_datetime(df.index) + pd.offsets.MonthEnd(0)).strftime("%Y-%m-%d")
+    df.index = pd.to_datetime(df.index, errors="coerce")
+    df = df[df.index.notna()]
+    df.index = (df.index + pd.offsets.MonthEnd(0)).strftime("%Y-%m-%d")
 
     records = []
     for date_str, row in df.iterrows():
@@ -1045,7 +1044,7 @@ def validate_financial_statements(
     bs_gap = df_bs["TotalAssets"] - bs_calc
     bs_check = bs_gap.abs() <= 10
     if bs_check.all():
-        print("✅ Balance Sheet Equation (Assets = L + E): PERFECT MATCH")
+        print(" Balance Sheet Equation (Assets = L + E): PERFECT MATCH")
     else:
         print("❌ BALANCE SHEET LEAK DETECTED:")
         for date, is_valid in bs_check.items():
@@ -1058,7 +1057,7 @@ def validate_financial_statements(
     is_gap = df_is["OperatingIncome"] - is_calc
     is_check = is_gap.abs() < 1
     if is_check.all():
-        print("✅ Income Statement Equation (GP - Opex = OpInc): PERFECT MATCH")
+        print(" Income Statement Equation (GP - Opex = OpInc): PERFECT MATCH")
     else:
         print("❌ INCOME STATEMENT LEAK DETECTED:")
         for date, is_valid in is_check.items():
@@ -1074,9 +1073,9 @@ def validate_financial_statements(
     bs_cf_check = (bs_cf_gap.abs() < 5.0) | (cf_cash <= bs_aggregate + 5.0)
 
     if bs_cf_check.all():
-        print("✅ BS/CF Cash Link (Ending Cash): PERFECT MATCH")
+        print(" BS/CF Cash Link (Ending Cash): PERFECT MATCH")
     else:
-        print("⚠️ BS/CF LINK LEAK DETECTED:")
+        print(" BS/CF LINK LEAK DETECTED:")
         for date, is_valid in bs_cf_check.items():
             if not is_valid:
                 print(
@@ -1087,9 +1086,9 @@ def validate_financial_statements(
     cf_gap = df_cf["CashFromOperations"] - cf_calc
     cf_check = cf_gap.abs() < 1
     if cf_check.all():
-        print("✅ Direct Cash Flow Equation: PERFECT MATCH")
+        print(" Direct Cash Flow Equation: PERFECT MATCH")
     else:
-        print("⚠️ DIRECT CASH FLOW LEAK DETECTED:")
+        print(" DIRECT CASH FLOW LEAK DETECTED:")
         for date, is_valid in cf_check.items():
             if not is_valid:
                 print(
@@ -1228,44 +1227,38 @@ indirect_cf_buckets = [
 # CALL ALL API FUNCTION
 
 
-def run_etl_pipeline(ai_mode="local"):
-    target_tickers = [
-        # "NTPC.NS",
-        # "POWERGRID",
-        "ADANIPOWER.NS",
-        # "TATAPOWER",
-        # "JSWENERGY.NS",
-        # "ONGC.NS",
-        # "IOC",
-        # "BPCL",
-        # "GAIL.NS",
-        # "ADANIGREEN.NS",
-        # "IREDA.NS",
-        # "NHPC.NS",
-        # "ADANIENSOL.NS",
-        # "IEX.NS",
-        # "TORRENTPOWER.NS",
-        # "GUJGASLTD.NS",
-        # "PETRONET.NS",
-        # "SJVN.NS",
-        # "CESC.NS",
-    ]
+def run_etl_pipeline(target_tickers, ai_mode="local"):
+    """
+    Executes the ETL pipeline for the provided list of tickers and
+    returns a summary matrix of the forensic validation results.
+    """
     failed_tickers = []
+    batch_summary = []
 
     print("\n" + "=" * 40)
     print(f"STARTING BATCH PROCESSING (Mode: {ai_mode.upper()})")
     print("=" * 40)
 
     try:
-        # ADD THIS LINE HERE to boot the PyTorch/Ollama engine:
+        # Boot the PyTorch/Ollama engine if running locally
         if ai_mode == "local":
             runtime.load_models()
+
         for ticker in target_tickers:
             # FETCH UNIFIED PAYLOAD
             payload = fetch_all_financials(ticker)
 
             if not payload:
                 failed_tickers.append(ticker)
+                batch_summary.append(
+                    {
+                        "Ticker": ticker,
+                        "Status": "❌ Failed to Fetch",
+                        "Direct Validation": "N/A",
+                        "Indirect Validation": "N/A",
+                        "Rows Upserted": 0,
+                    }
+                )
                 continue
 
             source = payload["source"]
@@ -1318,12 +1311,8 @@ def run_etl_pipeline(ai_mode="local"):
                 dfBalanceSheetQ = None
                 dfCashFlowQ = None
 
-            # ==========================================
-            # BRONZE LAYER: SAVE RAW DATA TO JSONB VAULT
-            # ==========================================
             print(f"[{ticker}] Backing up raw data to JSONB Vault...")
 
-            # Save Yearly Statements
             store_raw_data_jsonb(
                 ticker, source, "IS_Y", dfIncomeStatementY, engine, raw_financials
             )
@@ -1334,7 +1323,6 @@ def run_etl_pipeline(ai_mode="local"):
                 ticker, source, "CF_Y", dfCashFlowY, engine, raw_financials
             )
 
-            # Save Quarterly Statements (if they exist)
             if dfIncomeStatementQ is not None:
                 store_raw_data_jsonb(
                     ticker, source, "IS_Q", dfIncomeStatementQ, engine, raw_financials
@@ -1348,9 +1336,6 @@ def run_etl_pipeline(ai_mode="local"):
                     ticker, source, "CF_Q", dfCashFlowQ, engine, raw_financials
                 )
 
-            # ==========================================
-            # SILVER LAYER: UNIFIED CLEANING & MAPPING
-            # ==========================================
             print(f"[{ticker}] Cleaning and Mapping Data for Silver Tables...")
 
             if source == "vantage":
@@ -1363,7 +1348,6 @@ def run_etl_pipeline(ai_mode="local"):
                 stmt_currency = "INR"
                 stmt_multiplier = 10.0
 
-            # Base Pre-Processing
             if dfIncomeStatementY is not None:
                 dfIncomeStatementY = clean_financial_dataframe(
                     standardize_dataframe_labels(to_pascal_case(dfIncomeStatementY))
@@ -1389,7 +1373,6 @@ def run_etl_pipeline(ai_mode="local"):
                     standardize_dataframe_labels(to_pascal_case(dfCashFlowQ))
                 )
 
-            # Screener-Specific Conversions
             if source == "screener":
                 if dfIncomeStatementQ is not None:
                     dfIncomeStatementQ = convert_screener_percentages_to_absolute(
@@ -1400,7 +1383,6 @@ def run_etl_pipeline(ai_mode="local"):
                         dfIncomeStatementY
                     )
 
-            # Dictionary Mapping & Fallback Application
             if source in ["yfinance", "screener"]:
                 is_keys = ittelson_income_statement_columns + [
                     "PretaxIncome",
@@ -1588,6 +1570,43 @@ def run_etl_pipeline(ai_mode="local"):
                 )
             )
 
+            direct_passed = (
+                audit_results_Y["IS_IsValid"].all()
+                and audit_results_Y["BS_IsValid"].all()
+                and audit_results_Y["Direct_CF_Match"].all()
+            )
+
+            # Extract unique indirect leak types by checking the plugged columns
+            indirect_leaks = set()
+            if (clean_yearly_indirect_cash_flow["Unmapped_Operating"].abs() > 5).any():
+                indirect_leaks.add("OCF Leak")
+            if (clean_yearly_indirect_cash_flow["Unmapped_Investing"].abs() > 5).any():
+                indirect_leaks.add("ICF Leak")
+            if (clean_yearly_indirect_cash_flow["Unmapped_Financing"].abs() > 5).any():
+                indirect_leaks.add("FCF Leak")
+            if (
+                clean_yearly_indirect_cash_flow["Unmapped_Rollforward"].abs() > 15
+            ).any():
+                indirect_leaks.add("Rollforward Mismatch")
+
+            if not indirect_leaks:
+                indirect_status = " Passed"
+            else:
+                indirect_status = " Leaks: " + ", ".join(sorted(list(indirect_leaks)))
+
+            # Append the forensic status for Streamlit
+            batch_summary.append(
+                {
+                    "Ticker": ticker,
+                    "Status": f" Success ({source})",
+                    "Direct Validation": (
+                        " Passed" if direct_passed else " Leaks Detected"
+                    ),
+                    "Indirect Validation": indirect_status,
+                    "Rows Upserted": len(clean_yearly_income_statement),
+                }
+            )
+
             clean_yearly_income_statement["IsValid"] = (
                 clean_yearly_income_statement["ReportDate"]
                 .map(audit_results_Y["IS_IsValid"])
@@ -1684,3 +1703,6 @@ def run_etl_pipeline(ai_mode="local"):
         if failed_tickers:
             print(f"Failed tickers requiring review: {failed_tickers}")
         print("=" * 40)
+
+    # Return the clean summary dictionary to the frontend
+    return batch_summary
