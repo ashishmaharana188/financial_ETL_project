@@ -1629,6 +1629,14 @@ def run_etl_pipeline(target_tickers, ai_mode="local"):
                             ),
                             "Clean": clean_yearly_cash_flow,
                         },
+                        "ICF": {
+                            "Raw": (
+                                dfCashFlowY
+                                if dfCashFlowY is not None
+                                else pd.DataFrame()
+                            ),
+                            "Clean": clean_yearly_indirect_cash_flow,
+                        },
                     },
                 }
             )
