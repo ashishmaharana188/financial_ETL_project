@@ -1590,20 +1590,46 @@ def run_etl_pipeline(target_tickers, ai_mode="local"):
                 indirect_leaks.add("Rollforward Mismatch")
 
             if not indirect_leaks:
-                indirect_status = " Passed"
+                indirect_status = "✅ Passed"
             else:
-                indirect_status = " Leaks: " + ", ".join(sorted(list(indirect_leaks)))
+                indirect_status = "⚠️ Leaks: " + ", ".join(sorted(list(indirect_leaks)))
 
-            # Append the forensic status for Streamlit
+            # Append the forensic status AND the DataFrames for the Streamlit Inspector
             batch_summary.append(
                 {
                     "Ticker": ticker,
-                    "Status": f" Success ({source})",
+                    "Status": f"✅ Success ({source})",
                     "Direct Validation": (
-                        " Passed" if direct_passed else " Leaks Detected"
+                        "✅ Passed" if direct_passed else "⚠️ Leaks Detected"
                     ),
                     "Indirect Validation": indirect_status,
                     "Rows Upserted": len(clean_yearly_income_statement),
+                    "DataPayload": {
+                        "IS": {
+                            "Raw": (
+                                dfIncomeStatementY
+                                if dfIncomeStatementY is not None
+                                else pd.DataFrame()
+                            ),
+                            "Clean": clean_yearly_income_statement,
+                        },
+                        "BS": {
+                            "Raw": (
+                                dfBalanceSheetY
+                                if dfBalanceSheetY is not None
+                                else pd.DataFrame()
+                            ),
+                            "Clean": clean_yearly_balance_sheet,
+                        },
+                        "CF": {
+                            "Raw": (
+                                dfCashFlowY
+                                if dfCashFlowY is not None
+                                else pd.DataFrame()
+                            ),
+                            "Clean": clean_yearly_cash_flow,
+                        },
+                    },
                 }
             )
 
@@ -1704,5 +1730,5 @@ def run_etl_pipeline(target_tickers, ai_mode="local"):
             print(f"Failed tickers requiring review: {failed_tickers}")
         print("=" * 40)
 
-    # Return the clean summary dictionary to the frontend
+    # Return the clean summary dictionary (now carrying the DataFrames) to the frontend
     return batch_summary

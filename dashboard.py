@@ -14,13 +14,13 @@ st.set_page_config(
     page_title="Financial ETL Control Center", layout="wide", page_icon="⚡"
 )
 
-st.title("⚡ Financial ETL Control Center")
+st.title("Financial ETL Control Center")
 st.markdown(
     "Run the mathematically validated pipeline on target companies and monitor forensic outputs."
 )
 
 st.divider()
-st.subheader("🚀 Execute ETL Batch")
+st.subheader("Execute ETL Batch")
 
 col1, col2 = st.columns([3, 1])
 with col1:
@@ -54,10 +54,18 @@ if st.button("Start ETL Pipeline", type="primary", use_container_width=True):
                 st.success("ETL Batch Processing Complete!")
 
                 if batch_results:
-                    # Render the clean validation matrix
-                    results_df = pd.DataFrame(batch_results)
+                    st.success("ETL Batch Processing Complete!")
+
+                    # 1. MAIN SUMMARY TABLE (Filter out the bulky DataPayload so it renders cleanly)
+                    summary_df = pd.DataFrame(
+                        [
+                            {k: v for k, v in res.items() if k != "DataPayload"}
+                            for res in batch_results
+                        ]
+                    )
+
                     st.dataframe(
-                        results_df,
+                        summary_df,
                         column_config={
                             "Ticker": st.column_config.TextColumn("Client (Ticker)"),
                             "Status": st.column_config.TextColumn("Fetch Status"),
@@ -74,6 +82,68 @@ if st.button("Start ETL Pipeline", type="primary", use_container_width=True):
                         hide_index=True,
                         use_container_width=True,
                     )
+
+                    # 2. DEEP DIVE DATA INSPECTOR
+                    st.divider()
+                    st.subheader("Deep Dive Data Inspector")
+                    st.markdown(
+                        "Compare the raw extracted PascalCase data directly against the final database-formatted output."
+                    )
+
+                    # Filter only successful fetches that actually have DataPayload attached
+                    valid_results = [r for r in batch_results if "DataPayload" in r]
+
+                    if valid_results:
+                        # Interactive Selectors
+                        inspector_col1, inspector_col2 = st.columns([1, 2])
+                        with inspector_col1:
+                            selected_ticker = st.selectbox(
+                                "Select Client:", [r["Ticker"] for r in valid_results]
+                            )
+                        with inspector_col2:
+                            selected_statement = st.radio(
+                                "Select Statement:",
+                                [
+                                    "Income Statement (IS)",
+                                    "Balance Sheet (BS)",
+                                    "Cash Flow (CF)",
+                                ],
+                                horizontal=True,
+                            )
+
+                        # Map selection to dictionary keys
+                        stmt_key = (
+                            "IS"
+                            if "Income" in selected_statement
+                            else "BS" if "Balance" in selected_statement else "CF"
+                        )
+
+                        # Extract the targeted client's DataFrames
+                        client_data = next(
+                            (
+                                item["DataPayload"]
+                                for item in valid_results
+                                if item["Ticker"] == selected_ticker
+                            ),
+                            None,
+                        )
+
+                        if client_data:
+                            raw_df = client_data[stmt_key]["Raw"]
+                            clean_df = client_data[stmt_key]["Clean"]
+
+                            # Render side-by-side without lagging the DOM
+                            view_col1, view_col2 = st.columns(2)
+                            with view_col1:
+                                st.caption(
+                                    f"**Raw Extracted Data** ({selected_ticker} - {stmt_key})"
+                                )
+                                st.dataframe(raw_df, use_container_width=True)
+                            with view_col2:
+                                st.caption(
+                                    f"**Final DB-Formatted Data** ({selected_ticker} - {stmt_key})"
+                                )
+                                st.dataframe(clean_df, use_container_width=True)
                 else:
                     st.info("No data returned from the pipeline.")
             except Exception as e:
