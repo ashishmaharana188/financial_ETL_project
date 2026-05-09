@@ -1026,7 +1026,13 @@ def apply_indirect_cash_flow_fallbacks(
 
 
 def validate_financial_statements(
-    df_is, df_bs, df_cf, df_indirect_cf=None, ticker=None
+    df_is,
+    df_bs,
+    df_cf,
+    df_indirect_cf=None,
+    ticker=None,
+    df_cf_raw=None,
+    stmt_multiplier=1.0,
 ):
     print(f"\n{'='*40}")
     print(f"RUNNING 3-STATEMENT VALIDATION: {ticker}")
@@ -1173,29 +1179,47 @@ def validate_financial_statements(
             df_indirect_cf["NetChangeInCash"] - calc_net_change
         ).abs() <= dust_tolerance
 
-        calc_ending = (
+        pure_calc_ending = (
             df_indirect_cf["BeginningCash"]
             + df_indirect_cf["NetChangeInCash"]
             + df_indirect_cf["EffectOfExchangeRates"].fillna(0)
         )
-        df_indirect_cf["Unmapped_Rollforward"] = 0.0
 
-        rollforward_gap = df_indirect_cf["EndingCash"] - calc_ending
+        # 2. Calculate the TRUE total leak
+        total_leak = df_indirect_cf["EndingCash"] - pure_calc_ending
 
+        # 3. Store the actual mathematical leak regardless of what the API says
+        df_indirect_cf["Unmapped_Rollforward"] = total_leak
+
+        # 4. Extract the API's plug to see if it explains our leak
+        raw_adj = pd.Series(0.0, index=df_indirect_cf.index)
+        if (
+            df_cf_raw is not None
+            and "OtherCashAdjustmentOutsideChangeinCash" in df_cf_raw.index
+        ):
+            extracted_adj = df_cf_raw.loc[
+                "OtherCashAdjustmentOutsideChangeinCash"
+            ].fillna(0)
+            extracted_adj.index = (
+                pd.to_datetime(extracted_adj.index) + pd.offsets.MonthEnd(0)
+            ).strftime("%Y-%m-%d")
+            raw_adj = extracted_adj * stmt_multiplier
+
+        # 5. Validation Check: The statement is valid ONLY if the API's adjustment perfectly explains the total leak
+        indirect_rollforward_check = (total_leak - raw_adj).abs() <= dust_tolerance
+
+        # 6. Logging the results
         for date in df_indirect_cf.index:
-            if (
-                abs(rollforward_gap[date]) > dust_tolerance
-                or df_indirect_cf.at[date, "BeginningCash"] == 0
-            ):
-                print(
-                    f"   -> [{date}] Rollforward Mismatch: Plugging {rollforward_gap[date]:.2f} into Unmapped_Rollforward"
-                )
-                df_indirect_cf.at[date, "Unmapped_Rollforward"] = rollforward_gap[date]
-
-        calc_ending_final = calc_ending + df_indirect_cf["Unmapped_Rollforward"]
-        indirect_rollforward_check = (
-            df_indirect_cf["EndingCash"] - calc_ending_final
-        ).abs() <= dust_tolerance
+            leak_val = df_indirect_cf.at[date, "Unmapped_Rollforward"]
+            if abs(leak_val) > dust_tolerance:
+                if abs(leak_val - raw_adj.get(date, 0)) <= dust_tolerance:
+                    print(
+                        f"   -> [{date}] Rollforward Leak: {leak_val:.2f} (Successfully reconciled with raw API adjustment)"
+                    )
+                else:
+                    print(
+                        f"   -> [{date}] CRITICAL ROLLFORWARD LEAK: {leak_val:.2f} (API adjustment {raw_adj.get(date, 0):.2f} failed to reconcile)"
+                    )
 
         audit_dict.update(
             {
@@ -1567,6 +1591,8 @@ def run_etl_pipeline(target_tickers, ai_mode="local"):
                     clean_yearly_cash_flow,
                     clean_yearly_indirect_cash_flow,
                     ticker=ticker,
+                    df_cf_raw=dfCashFlowY,
+                    stmt_multiplier=stmt_multiplier,
                 )
             )
 
