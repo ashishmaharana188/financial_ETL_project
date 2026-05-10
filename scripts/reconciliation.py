@@ -3,7 +3,6 @@ from itertools import combinations
 
 
 def extract_mapped_keys(current_mapping):
-    """Helper to flatten the list of lists in your existing mapping dictionary."""
     mapped_keys = set()
     if not current_mapping:
         return mapped_keys
@@ -20,10 +19,7 @@ def extract_mapped_keys(current_mapping):
 def execute_three_way_match(
     raw_data, ai_classified_keys, leak_type, target_gap, current_multiplier
 ):
-    """
-    Tests every combination of the AI's suggested keys to find the exact subset
-    that mathematically perfectly fills the gap (checking both positive and negative signs).
-    """
+
     boundary_map = {
         "OCF": "OperatingCashFlow",
         "ICF": "InvestingCashFlow",
@@ -62,7 +58,7 @@ def execute_three_way_match(
     # Test every possible combination size (1 key, 2 keys... up to all keys)
     for r in range(1, len(keys_list) + 1):
         for combo in combinations(keys_list, r):
-            # NEW: Test all possible +/- sign combinations for these specific keys
+            #  Test all possible +/- sign combinations for these specific keys
             for signs in product([1, -1], repeat=r):
                 combo_sum = sum(trace_values[k] * sign for k, sign in zip(combo, signs))
 

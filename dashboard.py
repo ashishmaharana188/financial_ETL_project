@@ -27,9 +27,6 @@ tab_etl, tab_history = st.tabs(
     ["ETL Control Center", "Swarm Ratio Engine (Database View)"]
 )
 
-# ---------------------------------------------------------
-# TAB 1: ETL CONTROL CENTER (Existing Pipeline)
-# ---------------------------------------------------------
 with tab_etl:
     st.markdown(
         "Run the mathematically validated pipeline on target companies and monitor forensic outputs."
@@ -168,9 +165,6 @@ with tab_etl:
                     st.dataframe(clean_df, use_container_width=True)
 
 
-# ---------------------------------------------------------
-# TAB 2: RATIO ANALYSIS ENGINE (Database History)
-# ---------------------------------------------------------
 with tab_history:
     st.markdown(
         "Query the PostgreSQL database to analyze all 7 Swarm-validated financial ratios."
@@ -216,10 +210,6 @@ with tab_history:
                 df_roic = fetch_roic(selected_db_ticker)
                 df_fcf = fetch_fcf_yield(selected_db_ticker)
                 df_dol = fetch_dol(selected_db_ticker)
-
-                # ==========================================
-                # ADD PERCENTAGE COLUMNS FOR UI DISPLAY
-                # ==========================================
 
                 # 3. Operating Margin
                 if "operating_margin" in df_margin.columns:
@@ -269,9 +259,6 @@ with tab_history:
                         ),
                     )
 
-                # ==========================================
-                # RENDER DASHBOARD (Ordered 1 to 7)
-                # ==========================================
                 st.divider()
                 st.subheader(f"Quantitative Blueprint: {selected_db_ticker}")
 

@@ -6,10 +6,7 @@ from scripts.model_runtime import runtime
 def get_top_buckets(
     unmapped_key, config_path="mapping_config.json", top_k=5, candidates=None
 ):
-    """
-    Uses BGE-M3 (via PyTorch) to find the top mathematically similar buckets for a given key.
-    If 'candidates' is provided, it restricts the search to that specific section.
-    """
+
     print(f"[VECTOR SEARCH] Analyzing unmapped key: '{unmapped_key}'...")
 
     # 1. Load the dictionary categories
@@ -20,7 +17,6 @@ def get_top_buckets(
     target_map = config.get("normalized_indirect_cf_synonym_map", {})
 
     # --- TARGETED FILTERING LOGIC ---
-    # If a specific section's candidates are provided (e.g., only OCF), filter the list.
     if candidates:
         bucket_names = [b for b in candidates if b in target_map]
     else:
@@ -38,12 +34,10 @@ def get_top_buckets(
         return []
 
     # 2. Vectorize directly on the GPU
-    # convert_to_tensor=True keeps the math inside the VRAM, bypassing the CPU entirely
     bucket_vectors = runtime.embedder.encode(bucket_names, convert_to_tensor=True)
     key_vector = runtime.embedder.encode(unmapped_key, convert_to_tensor=True)
 
     # 3. Calculate Cosine Similarity natively via sentence_transformers
-    # This returns a tensor of scores representing the distance
     cosine_scores = util.cos_sim(key_vector, bucket_vectors)[0]
 
     # 4. Pair the scores with the bucket names
@@ -52,7 +46,6 @@ def get_top_buckets(
         similarities.append((bucket_names[i], score.item()))
 
     # 5. Sort by highest similarity and grab the top_k
-    # (Use actual_k to prevent index errors if the filtered list is smaller than top_k)
     similarities.sort(key=lambda x: x[1], reverse=True)
     actual_k = min(top_k, len(similarities))
     top_matches = [match[0] for match in similarities[:actual_k]]
@@ -61,7 +54,6 @@ def get_top_buckets(
     return top_matches
 
 
-# Example usage (for testing the file directly):
 if __name__ == "__main__":
     test_key = "ProceedsFromMaturitiesOfInvestments"
 
