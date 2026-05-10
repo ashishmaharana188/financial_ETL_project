@@ -11,13 +11,12 @@ import urllib3
 import yfinance as yf
 from bs4 import BeautifulSoup
 from sqlalchemy.dialects.postgresql import insert
-from scripts.database import engine
 from scripts.ai_agent import trigger_semantic_router
 from scripts.reconciliation import extract_mapped_keys, execute_three_way_match
 from scripts.ai_agent import trigger_semantic_router
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
-from scripts.database import engine, raw_financials
+from scripts.database import engine, raw_financials, company_profiles
 from scripts.reconciliation import extract_mapped_keys, execute_three_way_match
 from sqlalchemy import text
 from scripts.model_runtime import runtime
@@ -393,6 +392,39 @@ def fetch_all_financials(ticker):
 ## CLEAN DATA FUNCTIONS
 
 
+def update_company_profile(ticker: str):
+    """Fetches Sector/Industry from yfinance and upserts into the database."""
+    try:
+        info = yf.Ticker(ticker).info
+
+        # Use .get() so it doesn't crash if a specific stock is missing data
+        sector = info.get("sector", "Unknown")
+        industry = info.get("industry", "Unknown")
+        short_name = info.get("shortName", ticker)
+
+        # PostgreSQL Upsert Logic
+        stmt = insert(company_profiles).values(
+            Ticker=ticker, CompanyName=short_name, Sector=sector, Industry=industry
+        )
+
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["Ticker"],
+            set_={
+                "CompanyName": stmt.excluded.CompanyName,
+                "Sector": stmt.excluded.Sector,
+                "Industry": stmt.excluded.Industry,
+            },
+        )
+
+        with engine.begin() as conn:
+            conn.execute(stmt)
+
+        print(f"[{ticker}] Profile Synced -> Sector: {sector} | Industry: {industry}")
+
+    except Exception as e:
+        print(f"[{ticker}] Warning: Failed to sync company profile: {e}")
+
+
 def clean_financial_dataframe(df):
 
     return df.replace(r"[%,+]", "", regex=True).apply(pd.to_numeric, errors="coerce")
@@ -655,11 +687,17 @@ def apply_income_statement_fallbacks(df, target_columns):
             )
 
     # OperatingIncome Fallback (Ensure calculation exists if API skips it)
+    calc_op_inc = df.loc["GrossProfit"].fillna(0) - df.loc["OperatingExpense"].fillna(0)
+
+    # If the API skipped it, fill it
     if df.loc["OperatingIncome"].isna().any():
-        calc_op_inc = df.loc["GrossProfit"].fillna(0) - df.loc[
-            "OperatingExpense"
-        ].fillna(0)
         df.loc["OperatingIncome"] = df.loc["OperatingIncome"].fillna(calc_op_inc)
+
+    # If the API gave a number that mathematically violates the GP - Opex equation by more than a rounding error, overwrite it.
+    discrepancy = (df.loc["OperatingIncome"] - calc_op_inc).abs()
+    df.loc["OperatingIncome"] = df.loc["OperatingIncome"].where(
+        discrepancy < 10, calc_op_inc
+    )
 
     # NetInterestIncome Fallback: PretaxIncome - OperatingIncome
     if df.loc["NetInterestIncome"].isna().any():
@@ -787,6 +825,11 @@ def apply_balance_sheet_fallbacks(df, target_columns):
         df.loc["StockholdersEquity"] = df.loc["StockholdersEquity"].fillna(calc_equity)
 
     final_df = df.loc[target_columns].fillna(0)
+
+    if "TotalAssets" in final_df.index:
+        # Keep only columns (years) where Total Assets is strictly greater than 0
+        valid_columns = final_df.columns[final_df.loc["TotalAssets"] > 0]
+        final_df = final_df[valid_columns]
 
     return final_df
 
@@ -1277,7 +1320,7 @@ def run_etl_pipeline(target_tickers, ai_mode="local"):
                 batch_summary.append(
                     {
                         "Ticker": ticker,
-                        "Status": "❌ Failed to Fetch",
+                        "Status": "Failed to Fetch",
                         "Direct Validation": "N/A",
                         "Indirect Validation": "N/A",
                         "Rows Upserted": 0,
@@ -1287,7 +1330,7 @@ def run_etl_pipeline(target_tickers, ai_mode="local"):
 
             source = payload["source"]
             data = payload["data"]
-
+            update_company_profile(ticker)
             # UNPACK TO DATAFRAMES
             print(f"[{ticker}] Formatting DataFrames for {source}...")
 
@@ -1366,7 +1409,10 @@ def run_etl_pipeline(target_tickers, ai_mode="local"):
                 stmt_currency = "USD"
                 stmt_multiplier = 0.000001
             elif source == "yfinance":
-                stmt_currency = yf.Ticker(ticker).info.get("currency", "USD")
+                ticker_info = yf.Ticker(ticker).info
+                stmt_currency = ticker_info.get(
+                    "financialCurrency", ticker_info.get("currency", "USD")
+                ).upper()
                 stmt_multiplier = 0.000001
             elif source == "screener":
                 stmt_currency = "INR"
@@ -1616,17 +1662,17 @@ def run_etl_pipeline(target_tickers, ai_mode="local"):
                 indirect_leaks.add("Rollforward Mismatch")
 
             if not indirect_leaks:
-                indirect_status = "✅ Passed"
+                indirect_status = " Passed"
             else:
-                indirect_status = "⚠️ Leaks: " + ", ".join(sorted(list(indirect_leaks)))
+                indirect_status = " Leaks: " + ", ".join(sorted(list(indirect_leaks)))
 
             # Append the forensic status AND the DataFrames for the Streamlit Inspector
             batch_summary.append(
                 {
                     "Ticker": ticker,
-                    "Status": f"✅ Success ({source})",
+                    "Status": f" Success ({source})",
                     "Direct Validation": (
-                        "✅ Passed" if direct_passed else "⚠️ Leaks Detected"
+                        " Passed" if direct_passed else " Leaks Detected"
                     ),
                     "Indirect Validation": indirect_status,
                     "Rows Upserted": len(clean_yearly_income_statement),

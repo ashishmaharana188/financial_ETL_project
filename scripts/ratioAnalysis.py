@@ -126,7 +126,7 @@ def fetch_roic(ticker: str) -> pd.DataFrame:
 def fetch_fcf_yield(ticker: str) -> pd.DataFrame:
     query = text("""
         SELECT 
-            "Ticker", "ReportDate",
+            "Ticker", "ReportDate", "Currency",
             "TotalOperatingCashFlow", "CapExPurchaseOfPPE",
             ("TotalOperatingCashFlow" - ABS(COALESCE("CapExPurchaseOfPPE", 0))) AS free_cash_flow,
             CASE WHEN ("TotalOperatingCashFlow" - ABS(COALESCE("CapExPurchaseOfPPE", 0))) > 0 THEN TRUE ELSE FALSE END AS swarm_pass_positive_fcf
@@ -138,18 +138,32 @@ def fetch_fcf_yield(ticker: str) -> pd.DataFrame:
 
     if not df.empty:
         try:
-            # The Python-SQL Handshake to get live pricing
-            live_market_cap = yf.Ticker(ticker).info.get("marketCap", 1) / 1000000.0
+            # Get info directly
+            ticker_info = yf.Ticker(ticker).info
+            live_market_cap = ticker_info.get("marketCap", 1) / 1000000.0
+            market_cap_currency = ticker_info.get("currency", "Unknown")
         except Exception:
             live_market_cap = None
+            market_cap_currency = "Unknown"
 
         df["LiveMarketCap"] = live_market_cap
 
         def calc_yield(row):
             if not live_market_cap or not row["swarm_pass_positive_fcf"]:
                 return None
-            # Safely cast Decimal from Postgres to Float
-            return float(row["free_cash_flow"]) / live_market_cap
+
+            cash_flow = float(row["free_cash_flow"])
+            stmt_currency = str(row["Currency"]).upper()
+
+            # THE FIX: Currency Normalization Engine
+            # If statements are in USD but the stock trades in INR, normalize the cash flow
+            if stmt_currency == "USD" and market_cap_currency == "INR":
+                cash_flow = cash_flow * 83.50  # Convert USD to INR
+            # If statements are in INR but market cap is in USD (very rare)
+            elif stmt_currency == "INR" and market_cap_currency == "USD":
+                cash_flow = cash_flow / 83.50
+
+            return cash_flow / live_market_cap
 
         df["FCF_Yield"] = df.apply(calc_yield, axis=1)
         df["swarm_pass_cheap"] = df["FCF_Yield"].apply(

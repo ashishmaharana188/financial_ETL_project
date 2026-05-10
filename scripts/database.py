@@ -18,6 +18,24 @@ engine = create_engine("postgresql+psycopg2://postgres:123456@localhost:5432/pos
 # Setup Metadata
 metadata = MetaData(schema="public")
 
+
+company_profiles = Table(
+    "company_profiles",
+    metadata,
+    Column("Ticker", String(50), primary_key=True),
+    Column("CompanyName", String(200)),
+    Column("Sector", String(100)),
+    Column("Industry", String(100)),
+)
+
+macro_indicators = Table(
+    "macro_indicators",
+    metadata,
+    Column("IndicatorName", String(100), primary_key=True),
+    Column("ReportDate", String(50), primary_key=True),
+    Column("Value", Numeric),
+)
+
 ai_forensic_logs = Table(
     "ai_forensic_logs",
     metadata,
