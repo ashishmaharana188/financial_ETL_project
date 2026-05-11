@@ -11,6 +11,9 @@ from scripts.ratioAnalysis import (
     fetch_roic,
     fetch_fcf_yield,
     fetch_dol,
+    fetch_gross_margin,
+    fetch_interest_coverage,
+    fetch_asset_turnover,
 )
 from scripts.macroScrape import run_macro_pipeline
 
@@ -215,6 +218,7 @@ elif app_mode == "Single Company Deep Dive":
         )
 
         with st.spinner(f"Fetching Swarm Metrics for {selected_db_ticker}..."):
+            # Original Metrics
             df_ccc = fetch_ccc(selected_db_ticker)
             df_cfo_pat = fetch_cfo_to_pat(selected_db_ticker)
             df_margin = fetch_operating_margin(selected_db_ticker)
@@ -222,6 +226,11 @@ elif app_mode == "Single Company Deep Dive":
             df_roic = fetch_roic(selected_db_ticker)
             df_fcf = fetch_fcf_yield(selected_db_ticker)
             df_dol = fetch_dol(selected_db_ticker)
+
+            # New Macro Validator Metrics
+            df_gross = fetch_gross_margin(selected_db_ticker)
+            df_interest = fetch_interest_coverage(selected_db_ticker)
+            df_turnover = fetch_asset_turnover(selected_db_ticker)
 
             st.divider()
 
@@ -273,14 +282,57 @@ elif app_mode == "Single Company Deep Dive":
                 latest_dol = valid_dol.iloc[0] if not valid_dol.empty else 0
                 st.metric("DOL", f"{latest_dol:.2f}")
 
-            # --- NEW: TREND CHARTING ---
+            # --- NEW SECTION: MACRO VALIDATOR KPIs ---
+            st.caption("Phase 2: OLS Macro Validators")
+            vkpi_1, vkpi_2, vkpi_3, vkpi_4 = st.columns(4)
+            with vkpi_1:
+                latest_gross = (
+                    df_gross["gross_margin"].iloc[0] * 100
+                    if (
+                        not df_gross.empty
+                        and pd.notnull(df_gross["gross_margin"].iloc[0])
+                    )
+                    else 0
+                )
+                st.metric("Gross Margin (Anchor)", f"{latest_gross:.2f}%")
+            with vkpi_2:
+                latest_cfo_pat = (
+                    df_cfo_pat["cfo_to_pat"].iloc[0]
+                    if (
+                        not df_cfo_pat.empty
+                        and pd.notnull(df_cfo_pat["cfo_to_pat"].iloc[0])
+                    )
+                    else 0
+                )
+                st.metric("CFO/PAT (Forensic)", f"{latest_cfo_pat:.2f}")
+            with vkpi_3:
+                latest_int_cov = (
+                    df_interest["interest_coverage"].iloc[0]
+                    if (
+                        not df_interest.empty
+                        and pd.notnull(df_interest["interest_coverage"].iloc[0])
+                    )
+                    else 0
+                )
+                st.metric("Int. Coverage (Solvency)", f"{latest_int_cov:.2f}x")
+            with vkpi_4:
+                latest_turnover = (
+                    df_turnover["asset_turnover"].iloc[0]
+                    if (
+                        not df_turnover.empty
+                        and pd.notnull(df_turnover["asset_turnover"].iloc[0])
+                    )
+                    else 0
+                )
+                st.metric("Asset Turnover (Productivity)", f"{latest_turnover:.2f}x")
+
+            # --- ORIGINAL TREND CHARTING ---
             st.divider()
             st.subheader("Historical Trend Analysis")
             chart_col1, chart_col2 = st.columns(2)
 
             with chart_col1:
                 st.caption("ROIC vs Operating Margin (%)")
-                # Combine ROIC and Margin into one chart for correlation
                 if not df_roic.empty and not df_margin.empty:
                     chart_df = pd.merge(
                         df_roic[["ReportDate", "roic"]],
@@ -299,28 +351,24 @@ elif app_mode == "Single Company Deep Dive":
                     )
                     st.line_chart(de_chart)
 
-            # --- NEW: AI MEMO GENERATOR ---
+            # --- ORIGINAL AI MEMO GENERATOR ---
             st.divider()
             st.subheader("Chief Investment Officer (CIO) Summary")
             if st.button("Generate AI Investment Memo", type="primary"):
                 with st.spinner("AI is analyzing the financial blueprint..."):
-                    # NOTE: Replace this mock output with a call to your AI runtime
-                    # Example: summary = runtime.generate(prompt=f"Analyze {selected_db_ticker} with ROIC {latest_roic}...")
-
                     st.success("Analysis Complete")
                     st.markdown(f"""
                     **Executive Summary for {selected_db_ticker}**
                     * **Efficiency:** The current ROIC of {latest_roic:.2f}% indicates how effectively capital is being deployed.
                     * **Valuation:** An FCF Yield of {latest_fcf:.2f}% acts as the cash-backed floor for current valuation.
                     * **Leverage:** A D/E ratio of {latest_de:.2f} frames the survival risk of the balance sheet.
-                    
-                    *(To make this dynamic, hook this block up to your `scripts.ai_agent` or `scripts.model_runtime`)*
                     """)
 
-            # --- BOTTOM SECTION: FULL DETAILS ---
+            # --- BOTTOM SECTION: FULL DETAILS (ORIGINAL + NEW) ---
             st.divider()
             st.subheader("Detailed Financial Ratios")
 
+            # Format original percentages
             if "operating_margin" in df_margin.columns:
                 df_margin.insert(
                     df_margin.columns.get_loc("operating_margin") + 1,
@@ -362,6 +410,16 @@ elif app_mode == "Single Company Deep Dive":
                     ),
                 )
 
+            # Format new percentages
+            if "gross_margin" in df_gross.columns:
+                df_gross.insert(
+                    df_gross.columns.get_loc("gross_margin") + 1,
+                    "Gross (%)",
+                    (df_gross["gross_margin"] * 100).apply(
+                        lambda x: f"{x:.2f}%" if pd.notnull(x) else None
+                    ),
+                )
+
             colA, colB = st.columns(2)
             with colA:
                 st.markdown("#### 1. Cash Conversion Cycle")
@@ -372,6 +430,8 @@ elif app_mode == "Single Company Deep Dive":
                 st.dataframe(df_margin, use_container_width=True, hide_index=True)
                 st.markdown("#### 4. Debt-to-Equity")
                 st.dataframe(df_leverage, use_container_width=True, hide_index=True)
+                st.markdown("#### 8. Gross Margin")
+                st.dataframe(df_gross, use_container_width=True, hide_index=True)
             with colB:
                 st.markdown("#### 5. Return on Invested Capital")
                 st.dataframe(df_roic, use_container_width=True, hide_index=True)
@@ -379,7 +439,10 @@ elif app_mode == "Single Company Deep Dive":
                 st.dataframe(df_fcf, use_container_width=True, hide_index=True)
                 st.markdown("#### 7. Degree of Operating Leverage")
                 st.dataframe(df_dol, use_container_width=True, hide_index=True)
-
+                st.markdown("#### 9. Interest Coverage")
+                st.dataframe(df_interest, use_container_width=True, hide_index=True)
+                st.markdown("#### 10. Asset Turnover")
+                st.dataframe(df_turnover, use_container_width=True, hide_index=True)
 
 elif app_mode == "Market Overview":
     st.title("Market Overview")

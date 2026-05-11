@@ -16,6 +16,7 @@ def fetch_hybrid_macro_data(period_days=1000):
         "Brent_Crude": "BZ=F",
         "USD_INR": "INR=X",
         "US_Dollar_Index": "DX-Y.NYB",
+        "Broad_Commodity": "DBC",  # NEW: Beam 7 (Sector-Specific Input Costs)
     }
 
     for name, ticker in yf_tickers.items():
@@ -33,27 +34,48 @@ def fetch_hybrid_macro_data(period_days=1000):
 
     # --- SPIGOT 2: TRADINGVIEW ---
     try:
-        print(" Hitting TradingView API for India_10Y_Yield...")
+        print(" -> Hitting TradingView API for India_10Y_Yield and India_CPI...")
         tv = TvDatafeed()
-        tv_data = tv.get_hist(
+
+        # 1. Fetch India 10Y Yield
+        tv_data_10y = tv.get_hist(
             symbol="IN10Y",
             exchange="TVC",
             interval=Interval.in_daily,
             n_bars=period_days,
         )
 
-        if tv_data is not None and not tv_data.empty:
-            df_in10y = tv_data[["close"]].copy()
+        if tv_data_10y is not None and not tv_data_10y.empty:
+            df_in10y = tv_data_10y[["close"]].copy()
             df_in10y.rename(columns={"close": "India_10Y_Yield"}, inplace=True)
             df_in10y.index = pd.to_datetime(df_in10y.index).normalize()
             raw_data_frames.append(df_in10y)
+
+        # 2. NEW: Fetch India CPI (Beam 8: Inflation)
+        tv_data_cpi = tv.get_hist(
+            symbol="INCPI",
+            exchange="ECONOMICS",
+            interval=Interval.in_daily,
+            n_bars=period_days,
+        )
+
+        if tv_data_cpi is not None and not tv_data_cpi.empty:
+            df_cpi = tv_data_cpi[["close"]].copy()
+            df_cpi.rename(columns={"close": "India_CPI"}, inplace=True)
+            df_cpi.index = pd.to_datetime(df_cpi.index).normalize()
+            raw_data_frames.append(df_cpi)
+
     except Exception as e:
         print(f"    [ERROR] TradingView API failed: {e}")
 
     # --- MERGE & SPREAD CALCULATION ---
     if raw_data_frames:
-        print("\nMerging datasets and calculating Yield Spread...")
+        print(
+            "\nMerging datasets, applying ffill for monthly CPI, and calculating Yield Spread..."
+        )
         macro_df = pd.concat(raw_data_frames, axis=1)
+
+        # Forward fill ensures monthly CPI data stretches across daily rows
         macro_df.ffill(inplace=True)
         macro_df.dropna(inplace=True)
 

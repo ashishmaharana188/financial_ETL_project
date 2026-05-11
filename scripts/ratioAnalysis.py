@@ -201,3 +201,58 @@ def fetch_dol(ticker: str) -> pd.DataFrame:
         ORDER BY "ReportDate" DESC;
     """)
     return pd.read_sql(query, engine, params={"ticker": ticker})
+
+
+def fetch_gross_margin(ticker: str) -> pd.DataFrame:
+    query = text("""
+        SELECT 
+            "Ticker", "ReportDate",
+            CASE WHEN "TotalRevenue" = 0 OR "TotalRevenue" IS NULL THEN NULL 
+                 ELSE ROUND("GrossProfit" / "TotalRevenue", 4) END AS gross_margin,
+            CASE WHEN "TotalRevenue" = 0 OR "TotalRevenue" IS NULL THEN FALSE 
+                 WHEN "GrossProfit" > 0 THEN TRUE ELSE FALSE END AS swarm_pass_gross_margin
+        FROM yearly_income_statement
+        WHERE "Ticker" = :ticker
+        ORDER BY "ReportDate" DESC;
+    """)
+    return pd.read_sql(query, engine, params={"ticker": ticker})
+
+
+def fetch_interest_coverage(ticker: str) -> pd.DataFrame:
+    query = text("""
+        SELECT 
+            "Ticker", "ReportDate",
+            "OperatingIncome", "NetInterestIncome",
+            CASE WHEN "NetInterestIncome" IS NULL OR "NetInterestIncome" = 0 THEN NULL
+                 ELSE ROUND("OperatingIncome" / ABS("NetInterestIncome"), 2) END AS interest_coverage,
+            CASE WHEN "NetInterestIncome" IS NULL OR "NetInterestIncome" = 0 THEN FALSE
+                 WHEN ("OperatingIncome" / ABS("NetInterestIncome")) > 1.5 THEN TRUE 
+                 ELSE FALSE END AS swarm_pass_solvency
+        FROM yearly_income_statement
+        WHERE "Ticker" = :ticker
+        ORDER BY "ReportDate" DESC;
+    """)
+    return pd.read_sql(query, engine, params={"ticker": ticker})
+
+
+def fetch_asset_turnover(ticker: str) -> pd.DataFrame:
+    query = text("""
+        WITH at_data AS (
+            SELECT 
+                i."Ticker", i."ReportDate", 
+                i."TotalRevenue", 
+                b."TotalAssets"
+            FROM yearly_income_statement i
+            JOIN yearly_balance_sheet b 
+            ON i."Ticker" = b."Ticker" AND i."ReportDate" = b."ReportDate"
+            WHERE i."Ticker" = :ticker
+        )
+        SELECT 
+            "Ticker", "ReportDate",
+            "TotalRevenue", "TotalAssets",
+            CASE WHEN "TotalAssets" IS NULL OR "TotalAssets" = 0 THEN NULL
+                 ELSE ROUND("TotalRevenue" / "TotalAssets", 2) END AS asset_turnover
+        FROM at_data
+        ORDER BY "ReportDate" DESC;
+    """)
+    return pd.read_sql(query, engine, params={"ticker": ticker})
