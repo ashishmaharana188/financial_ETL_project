@@ -17,6 +17,7 @@ from scripts.ratioAnalysis import (
 )
 from scripts.macroScrape import run_macro_pipeline
 from scripts.macroAnalysis import Phase2_OLS_Engine
+import plotly.graph_objects as go
 
 st.set_page_config(
     page_title="Swarm Intelligence Platform",
@@ -194,15 +195,14 @@ if app_mode == "ETL Control Center":
                         f"Final DB-Formatted Data ({selected_ticker} - {stmt_key})"
                     )
                     st.dataframe(clean_df, use_container_width=True)
-
-
+###############################################
 elif app_mode == "Single Company Deep Dive":
     st.title("Single Company Deep Dive")
 
     try:
         with engine.connect() as conn:
             tickers_df = pd.read_sql(
-                'SELECT DISTINCT "Ticker" FROM quarterly_income_statement', conn
+                'SELECT DISTINCT "Ticker" FROM yearly_income_statement', conn
             )
             available_db_tickers = tickers_df["Ticker"].tolist()
     except Exception as e:
@@ -218,222 +218,195 @@ elif app_mode == "Single Company Deep Dive":
             key="single_db_ticker_selectbox",
         )
 
-        with st.spinner(f"Fetching Swarm Metrics for {selected_db_ticker}..."):
-            # Original Metrics
-            df_ccc = fetch_ccc(selected_db_ticker)
-            df_cfo_pat = fetch_cfo_to_pat(selected_db_ticker)
-            df_margin = fetch_operating_margin(selected_db_ticker)
-            df_leverage = fetch_debt_to_equity(selected_db_ticker)
+        with st.spinner(f"Running Forensic Scan for {selected_db_ticker}..."):
+            # Fetch Phase 1: Structural Anchors
             df_roic = fetch_roic(selected_db_ticker)
             df_fcf = fetch_fcf_yield(selected_db_ticker)
+            df_de = fetch_debt_to_equity(selected_db_ticker)
+            df_ccc = fetch_ccc(selected_db_ticker)
             df_dol = fetch_dol(selected_db_ticker)
 
-            # New Macro Validator Metrics
-            df_gross = fetch_gross_margin(selected_db_ticker)
-            df_interest = fetch_interest_coverage(selected_db_ticker)
+            # Fetch Phase 2: Tactical Responders
+            df_op_margin = fetch_operating_margin(selected_db_ticker)
+            df_gr_margin = fetch_gross_margin(selected_db_ticker)
+            df_int_cov = fetch_interest_coverage(selected_db_ticker)
+            df_cfo_pat = fetch_cfo_to_pat(selected_db_ticker)
             df_turnover = fetch_asset_turnover(selected_db_ticker)
 
+            # --- TOP LEVEL: STRUCTURAL HEALTH (PHASE 1) ---
             st.divider()
+            st.subheader("Phase 1: Structural Anchors")
+            st.caption("Long-term capital efficiency and survival metrics.")
 
-            # --- TOP SECTION: ORIGINAL FOCUSED KPI CARDS ---
-            st.subheader("Key Ratios (Latest FY)")
-            kpi_c1, kpi_c2, kpi_c3, kpi_c4, kpi_c5 = st.columns(5)
-
-            with kpi_c1:
-                latest_margin = (
-                    df_margin["operating_margin"].iloc[0] * 100
-                    if (
-                        not df_margin.empty
-                        and pd.notnull(df_margin["operating_margin"].iloc[0])
-                    )
-                    else 0
-                )
-                st.metric("Op. Margin", f"{latest_margin:.2f}%")
-            with kpi_c2:
-                latest_de = (
-                    df_leverage["debt_to_equity"].iloc[0]
-                    if (
-                        not df_leverage.empty
-                        and pd.notnull(df_leverage["debt_to_equity"].iloc[0])
-                    )
-                    else 0
-                )
-                st.metric("Debt/Equity", f"{latest_de:.2f}")
-            with kpi_c3:
+            yc1, yc2, yc3, yc4, yc5 = st.columns(5)
+            with yc1:
                 latest_roic = (
                     df_roic["roic"].iloc[0] * 100
-                    if (not df_roic.empty and pd.notnull(df_roic["roic"].iloc[0]))
+                    if not df_roic.empty and pd.notnull(df_roic["roic"].iloc[0])
                     else 0
                 )
                 st.metric("ROIC", f"{latest_roic:.2f}%")
-            with kpi_c4:
+            with yc2:
                 latest_fcf = (
                     df_fcf["FCF_Yield"].iloc[0] * 100
-                    if (
-                        not df_fcf.empty
-                        and pd.notnull(
-                            df_fcf.get("FCF_Yield", pd.Series([None])).iloc[0]
-                        )
-                    )
+                    if not df_fcf.empty
+                    and pd.notnull(df_fcf.get("FCF_Yield", pd.Series([None])).iloc[0])
                     else 0
                 )
                 st.metric("FCF Yield", f"{latest_fcf:.2f}%")
-            with kpi_c5:
-                valid_dol = df_dol["degree_of_operating_leverage"].dropna()
-                latest_dol = valid_dol.iloc[0] if not valid_dol.empty else 0
-                st.metric("DOL", f"{latest_dol:.2f}")
-
-            # --- NEW SECTION: MACRO VALIDATOR KPIs ---
-            st.caption("Phase 2: OLS Macro Validators")
-            vkpi_1, vkpi_2, vkpi_3, vkpi_4 = st.columns(4)
-            with vkpi_1:
-                latest_gross = (
-                    df_gross["gross_margin"].iloc[0] * 100
-                    if (
-                        not df_gross.empty
-                        and pd.notnull(df_gross["gross_margin"].iloc[0])
-                    )
+            with yc3:
+                latest_de = (
+                    df_de["debt_to_equity"].iloc[0]
+                    if not df_de.empty and pd.notnull(df_de["debt_to_equity"].iloc[0])
                     else 0
                 )
-                st.metric("Gross Margin (Anchor)", f"{latest_gross:.2f}%")
-            with vkpi_2:
+                st.metric("Debt / Equity", f"{latest_de:.2f}")
+            with yc4:
+                latest_ccc = (
+                    df_ccc["cash_conversion_cycle"].iloc[0]
+                    if not df_ccc.empty
+                    and pd.notnull(df_ccc["cash_conversion_cycle"].iloc[0])
+                    else 0
+                )
+                st.metric("Cash Conv. Cycle", f"{latest_ccc:.0f} Days")
+            with yc5:
+                latest_dol = (
+                    df_dol["degree_of_operating_leverage"].iloc[0]
+                    if not df_dol.empty
+                    and pd.notnull(df_dol["degree_of_operating_leverage"].iloc[0])
+                    else 0
+                )
+                st.metric("Op. Leverage (DOL)", f"{latest_dol:.2f}x")
+
+            # --- MIDDLE LEVEL: TACTICAL RESPONDERS (PHASE 2) ---
+            st.divider()
+            st.subheader("Phase 2: Tactical Responders")
+            st.caption("Immediate shock absorbers for macro weather impacts.")
+
+            qc1, qc2, qc3, qc4, qc5 = st.columns(5)
+            with qc1:
+                latest_op_margin = (
+                    df_op_margin["operating_margin"].iloc[0] * 100
+                    if not df_op_margin.empty
+                    and pd.notnull(df_op_margin["operating_margin"].iloc[0])
+                    else 0
+                )
+                st.metric("Operating Margin", f"{latest_op_margin:.2f}%")
+            with qc2:
+                latest_gr_margin = (
+                    df_gr_margin["gross_margin"].iloc[0] * 100
+                    if not df_gr_margin.empty
+                    and pd.notnull(df_gr_margin["gross_margin"].iloc[0])
+                    else 0
+                )
+                st.metric("Gross Margin", f"{latest_gr_margin:.2f}%")
+            with qc3:
+                latest_int_cov = (
+                    df_int_cov["interest_coverage"].iloc[0]
+                    if not df_int_cov.empty
+                    and pd.notnull(df_int_cov["interest_coverage"].iloc[0])
+                    else 0
+                )
+                st.metric("Interest Coverage", f"{latest_int_cov:.2f}x")
+            with qc4:
                 latest_cfo_pat = (
                     df_cfo_pat["cfo_to_pat"].iloc[0]
-                    if (
-                        not df_cfo_pat.empty
-                        and pd.notnull(df_cfo_pat["cfo_to_pat"].iloc[0])
-                    )
+                    if not df_cfo_pat.empty
+                    and pd.notnull(df_cfo_pat["cfo_to_pat"].iloc[0])
                     else 0
                 )
-                st.metric("CFO/PAT (Forensic)", f"{latest_cfo_pat:.2f}")
-            with vkpi_3:
-                latest_int_cov = (
-                    df_interest["interest_coverage"].iloc[0]
-                    if (
-                        not df_interest.empty
-                        and pd.notnull(df_interest["interest_coverage"].iloc[0])
-                    )
-                    else 0
-                )
-                st.metric("Int. Coverage (Solvency)", f"{latest_int_cov:.2f}x")
-            with vkpi_4:
+                st.metric("CFO / PAT", f"{latest_cfo_pat:.2f}")
+            with qc5:
                 latest_turnover = (
                     df_turnover["asset_turnover"].iloc[0]
-                    if (
-                        not df_turnover.empty
-                        and pd.notnull(df_turnover["asset_turnover"].iloc[0])
-                    )
+                    if not df_turnover.empty
+                    and pd.notnull(df_turnover["asset_turnover"].iloc[0])
                     else 0
                 )
-                st.metric("Asset Turnover (Productivity)", f"{latest_turnover:.2f}x")
+                st.metric("Asset Turnover", f"{latest_turnover:.2f}x")
 
-            # --- ORIGINAL TREND CHARTING ---
+            # --- BOTTOM LEVEL: RAW DATA ROOM ---
             st.divider()
-            st.subheader("Historical Trend Analysis")
-            chart_col1, chart_col2 = st.columns(2)
+            st.subheader("The Data Room")
 
-            with chart_col1:
-                st.caption("ROIC vs Operating Margin (%)")
-                if not df_roic.empty and not df_margin.empty:
-                    chart_df = pd.merge(
-                        df_roic[["ReportDate", "roic"]],
-                        df_margin[["ReportDate", "operating_margin"]],
-                        on="ReportDate",
+            with st.expander("View Raw Structural Matrices (Phase 1)"):
+                if not df_roic.empty:
+                    p1_merged = df_roic[["ReportDate", "roic"]]
+                    if not df_fcf.empty:
+                        p1_merged = pd.merge(
+                            p1_merged,
+                            df_fcf[["ReportDate", "FCF_Yield"]],
+                            on="ReportDate",
+                            how="outer",
+                        )
+                    if not df_de.empty:
+                        p1_merged = pd.merge(
+                            p1_merged,
+                            df_de[["ReportDate", "debt_to_equity"]],
+                            on="ReportDate",
+                            how="outer",
+                        )
+                    if not df_ccc.empty:
+                        p1_merged = pd.merge(
+                            p1_merged,
+                            df_ccc[["ReportDate", "cash_conversion_cycle"]],
+                            on="ReportDate",
+                            how="outer",
+                        )
+                    if not df_dol.empty:
+                        p1_merged = pd.merge(
+                            p1_merged,
+                            df_dol[["ReportDate", "degree_of_operating_leverage"]],
+                            on="ReportDate",
+                            how="outer",
+                        )
+                    st.dataframe(
+                        p1_merged.sort_values(by="ReportDate", ascending=False),
+                        use_container_width=True,
                     )
-                    chart_df["ROIC"] = chart_df["roic"] * 100
-                    chart_df["Margin"] = chart_df["operating_margin"] * 100
-                    st.line_chart(chart_df.set_index("ReportDate")[["ROIC", "Margin"]])
+                else:
+                    st.write("No structural data computed.")
 
-            with chart_col2:
-                st.caption("Debt-to-Equity History")
-                if not df_leverage.empty:
-                    de_chart = df_leverage[["ReportDate", "debt_to_equity"]].set_index(
-                        "ReportDate"
+            with st.expander("View Raw Tactical Matrices (Phase 2)"):
+                if not df_op_margin.empty:
+                    p2_merged = df_op_margin[["ReportDate", "operating_margin"]]
+                    if not df_gr_margin.empty:
+                        p2_merged = pd.merge(
+                            p2_merged,
+                            df_gr_margin[["ReportDate", "gross_margin"]],
+                            on="ReportDate",
+                            how="outer",
+                        )
+                    if not df_int_cov.empty:
+                        p2_merged = pd.merge(
+                            p2_merged,
+                            df_int_cov[["ReportDate", "interest_coverage"]],
+                            on="ReportDate",
+                            how="outer",
+                        )
+                    if not df_cfo_pat.empty:
+                        p2_merged = pd.merge(
+                            p2_merged,
+                            df_cfo_pat[["ReportDate", "cfo_to_pat"]],
+                            on="ReportDate",
+                            how="outer",
+                        )
+                    if not df_turnover.empty:
+                        p2_merged = pd.merge(
+                            p2_merged,
+                            df_turnover[["ReportDate", "asset_turnover"]],
+                            on="ReportDate",
+                            how="outer",
+                        )
+                    st.dataframe(
+                        p2_merged.sort_values(by="ReportDate", ascending=False),
+                        use_container_width=True,
                     )
-                    st.line_chart(de_chart)
-
-            # --- BOTTOM SECTION: FULL DETAILS ---
-            st.divider()
-            with st.expander("View Detailed Financial Ratios", expanded=False):
-                # Format original percentages
-                if "operating_margin" in df_margin.columns:
-                    df_margin.insert(
-                        df_margin.columns.get_loc("operating_margin") + 1,
-                        "Margin (%)",
-                        (df_margin["operating_margin"] * 100).apply(
-                            lambda x: f"{x:.2f}%" if pd.notnull(x) else None
-                        ),
-                    )
-                if "roic" in df_roic.columns:
-                    df_roic.insert(
-                        df_roic.columns.get_loc("roic") + 1,
-                        "ROIC (%)",
-                        (df_roic["roic"] * 100).apply(
-                            lambda x: f"{x:.2f}%" if pd.notnull(x) else None
-                        ),
-                    )
-                if "FCF_Yield" in df_fcf.columns:
-                    df_fcf.insert(
-                        df_fcf.columns.get_loc("FCF_Yield") + 1,
-                        "Yield (%)",
-                        (df_fcf["FCF_Yield"] * 100).apply(
-                            lambda x: f"{x:.2f}%" if pd.notnull(x) else None
-                        ),
-                    )
-                if "rev_growth_pct" in df_dol.columns:
-                    df_dol.insert(
-                        df_dol.columns.get_loc("rev_growth_pct") + 1,
-                        "Rev Growth (%)",
-                        df_dol["rev_growth_pct"].apply(
-                            lambda x: f"{x:.2f}%" if pd.notnull(x) else None
-                        ),
-                    )
-                if "ebit_growth_pct" in df_dol.columns:
-                    df_dol.insert(
-                        df_dol.columns.get_loc("ebit_growth_pct") + 1,
-                        "EBIT Growth (%)",
-                        df_dol["ebit_growth_pct"].apply(
-                            lambda x: f"{x:.2f}%" if pd.notnull(x) else None
-                        ),
-                    )
-                if "gross_margin" in df_gross.columns:
-                    df_gross.insert(
-                        df_gross.columns.get_loc("gross_margin") + 1,
-                        "Gross (%)",
-                        (df_gross["gross_margin"] * 100).apply(
-                            lambda x: f"{x:.2f}%" if pd.notnull(x) else None
-                        ),
-                    )
-
-                colA, colB = st.columns(2)
-                with colA:
-                    st.markdown("#### 1. Cash Conversion Cycle")
-                    st.dataframe(df_ccc, use_container_width=True, hide_index=True)
-                    st.markdown("#### 2. Quality of Earnings (CFO / PAT)")
-                    st.dataframe(df_cfo_pat, use_container_width=True, hide_index=True)
-                    st.markdown("#### 3. Operating Margin")
-                    st.dataframe(df_margin, use_container_width=True, hide_index=True)
-                    st.markdown("#### 4. Debt-to-Equity")
-                    st.dataframe(df_leverage, use_container_width=True, hide_index=True)
-                    st.markdown("#### 8. Gross Margin")
-                    st.dataframe(df_gross, use_container_width=True, hide_index=True)
-                with colB:
-                    st.markdown("#### 5. Return on Invested Capital")
-                    st.dataframe(df_roic, use_container_width=True, hide_index=True)
-                    st.markdown("#### 6. Live FCF Yield")
-                    st.dataframe(df_fcf, use_container_width=True, hide_index=True)
-                    st.markdown("#### 7. Degree of Operating Leverage")
-                    st.dataframe(df_dol, use_container_width=True, hide_index=True)
-                    st.markdown("#### 9. Interest Coverage")
-                    st.dataframe(df_interest, use_container_width=True, hide_index=True)
-                    st.markdown("#### 10. Asset Turnover")
-                    st.dataframe(df_turnover, use_container_width=True, hide_index=True)
+                else:
+                    st.write("No tactical data computed.")
 
             st.divider()
             st.header("Phase 2: OLS Macro Bridge & Forensic Triage")
-            st.markdown(
-                "Analyze how the 8 Macro Beams dictate the Micro Pillars, and manually triage structural outliers."
-            )
 
             # 1. Fetch and format the live Macro Spigot data from DB
             try:
@@ -450,14 +423,14 @@ elif app_mode == "Single Company Deep Dive":
                 macro_df = pd.DataFrame()
 
             if not macro_df.empty:
-                # 2. UI Selector for the Target Pillar
+                # 2. UI Selector for the Target Pillar (UPDATED VARIABLE NAMES HERE)
                 target_options = {
                     "Operating Margin (Primary Bridge)": (
                         "operating_margin",
-                        df_margin,
+                        df_op_margin,
                     ),
-                    "Gross Margin (Anchor)": ("gross_margin", df_gross),
-                    "Interest Coverage (Solvency)": ("interest_coverage", df_interest),
+                    "Gross Margin (Anchor)": ("gross_margin", df_gr_margin),
+                    "Interest Coverage (Solvency)": ("interest_coverage", df_int_cov),
                     "Asset Turnover (Productivity)": ("asset_turnover", df_turnover),
                 }
                 selected_pillar_label = st.selectbox(
@@ -525,18 +498,50 @@ elif app_mode == "Single Company Deep Dive":
                             chart_df, color=["#FF4B4B", "#0068C9", "#808080", "#808080"]
                         )
 
-                        # 8. Rendering Addition 2: The Residual / Rot Tracker
                         st.markdown("### 2. Management Skill: The Residual Tracker")
                         st.caption(
-                            "Continuous negative residuals indicate internal 'Rot' regardless of macro weather."
+                            "Green bars indicate 'Alpha' (Beating the macro odds). Red bars indicate 'Rot' (Underperforming the macro environment)."
                         )
-                        residual_df = pd.DataFrame(
-                            {
-                                "ReportDate": clean_tl["dates"],
-                                "Residual (Actual - Predicted)": clean_tl["residuals"],
-                            }
-                        ).set_index("ReportDate")
-                        st.bar_chart(residual_df, color="#FF8C00")
+
+                        # Determine colors: Green if positive, Red if negative
+                        bar_colors = [
+                            "#00C851" if val > 0 else "#FF4444"
+                            for val in clean_tl["residuals"]
+                        ]
+
+                        fig = go.Figure(
+                            data=[
+                                go.Bar(
+                                    x=clean_tl["dates"],
+                                    y=clean_tl["residuals"],
+                                    marker_color=bar_colors,
+                                    width=0.4,
+                                )
+                            ]
+                        )
+
+                        fig.update_layout(
+                            margin=dict(l=0, r=0, t=20, b=0),
+                            yaxis_title="Margin Beat/Miss",
+                            plot_bgcolor="rgba(0,0,0,0)",
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            # Draw a hard, bright zero-line so the user can easily see above/below
+                            shapes=[
+                                dict(
+                                    type="line",
+                                    xref="paper",
+                                    x0=0,
+                                    x1=1,
+                                    y0=0,
+                                    y1=0,
+                                    line=dict(
+                                        color="rgba(255, 255, 255, 0.5)", width=2
+                                    ),
+                                )
+                            ],
+                        )
+
+                        st.plotly_chart(fig, use_container_width=True)
 
                         # 9. DNA Output
                         with st.expander("View Mathematical DNA (Alpha Moat & Betas)"):
@@ -551,7 +556,7 @@ elif app_mode == "Single Company Deep Dive":
                 st.info(
                     "Macro Data is missing. Please run the ETL Control Center Macro Spigot first."
                 )
-
+############################################
 elif app_mode == "Market Overview":
     st.title("Market Overview")
     st.markdown("Cross-sectional ranking and quadrant analysis.")

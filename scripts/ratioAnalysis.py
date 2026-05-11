@@ -3,6 +3,8 @@ from sqlalchemy import text
 from scripts.database import engine
 import yfinance as yf
 
+# PHASE 1: STRUCTURAL ANCHORS (YEARLY TABLES)
+
 
 def fetch_ccc(ticker: str) -> pd.DataFrame:
     query = text("""
@@ -26,51 +28,6 @@ def fetch_ccc(ticker: str) -> pd.DataFrame:
                 ELSE NULL 
             END AS cash_conversion_cycle
         FROM ccc_data
-        ORDER BY "ReportDate" DESC;
-    """)
-    return pd.read_sql(query, engine, params={"ticker": ticker})
-
-
-def fetch_cfo_to_pat(ticker: str) -> pd.DataFrame:
-    query = text("""
-        WITH cfo_pat_data AS (
-            SELECT 
-                i."Ticker", i."ReportDate", 
-                i."NetIncome", 
-                c."TotalOperatingCashFlow"
-            FROM yearly_income_statement i
-            JOIN yearly_indirect_cash_flow c 
-            ON i."Ticker" = c."Ticker" AND i."ReportDate" = c."ReportDate"
-            WHERE i."Ticker" = :ticker
-        )
-        SELECT 
-            "Ticker", "ReportDate",
-            "NetIncome", "TotalOperatingCashFlow" AS cfo,
-            CASE 
-                WHEN "NetIncome" IS NULL OR "NetIncome" = 0 THEN NULL
-                ELSE ROUND("TotalOperatingCashFlow" / "NetIncome", 2) 
-            END AS cfo_to_pat,
-            CASE 
-                WHEN "NetIncome" <= 0 THEN FALSE
-                WHEN ("TotalOperatingCashFlow" / "NetIncome") >= 0.80 THEN TRUE
-                ELSE FALSE 
-            END AS swarm_pass_quality_of_earnings
-        FROM cfo_pat_data
-        ORDER BY "ReportDate" DESC;
-    """)
-    return pd.read_sql(query, engine, params={"ticker": ticker})
-
-
-def fetch_operating_margin(ticker: str) -> pd.DataFrame:
-    query = text("""
-        SELECT 
-            "Ticker", "ReportDate",
-            CASE WHEN "TotalRevenue" = 0 OR "TotalRevenue" IS NULL THEN NULL 
-                 ELSE ROUND("OperatingIncome" / "TotalRevenue", 4) END AS operating_margin,
-            CASE WHEN "TotalRevenue" = 0 OR "TotalRevenue" IS NULL THEN FALSE 
-                 WHEN "OperatingIncome" > 0 THEN TRUE ELSE FALSE END AS swarm_pass_operating_margin
-        FROM yearly_income_statement
-        WHERE "Ticker" = :ticker
         ORDER BY "ReportDate" DESC;
     """)
     return pd.read_sql(query, engine, params={"ticker": ticker})
@@ -138,8 +95,12 @@ def fetch_fcf_yield(ticker: str) -> pd.DataFrame:
 
     if not df.empty:
         try:
-            # Get info directly
+            # FIX 1: Smart Suffix - If the exact ticker fails, try appending .NS for Indian Screener stocks
             ticker_info = yf.Ticker(ticker).info
+            if not ticker_info.get("marketCap") or ticker_info.get("marketCap") <= 1:
+                ticker_info = yf.Ticker(f"{ticker}.NS").info
+
+            # YOUR ORIGINAL WORKING LOGIC RESTORED
             live_market_cap = ticker_info.get("marketCap", 1) / 1000000.0
             market_cap_currency = ticker_info.get("currency", "Unknown")
         except Exception:
@@ -149,23 +110,34 @@ def fetch_fcf_yield(ticker: str) -> pd.DataFrame:
         df["LiveMarketCap"] = live_market_cap
 
         def calc_yield(row):
-            if not live_market_cap or not row["swarm_pass_positive_fcf"]:
+            # THE FIX: Allow negative FCF to calculate! Only abort if market cap is missing entirely.
+            if (
+                not live_market_cap
+                or live_market_cap <= 1
+                or row["free_cash_flow"] is None
+            ):
                 return None
 
             cash_flow = float(row["free_cash_flow"])
             stmt_currency = str(row["Currency"]).upper()
 
-            # THE FIX: Currency Normalization Engine
-            # If statements are in USD but the stock trades in INR, normalize the cash flow
+            # FIX 2: The Scale Matcher - If the database cash flow is massive (Raw Screener Data),
+            # scale it down by 1,000,000 so it perfectly matches your market cap scale above!
+            if abs(cash_flow) > 1000000:
+                cash_flow = cash_flow / 1000000.0
+
+            # Currency Normalization
             if stmt_currency == "USD" and market_cap_currency == "INR":
-                cash_flow = cash_flow * 83.50  # Convert USD to INR
-            # If statements are in INR but market cap is in USD (very rare)
+                cash_flow = cash_flow * 83.50
             elif stmt_currency == "INR" and market_cap_currency == "USD":
                 cash_flow = cash_flow / 83.50
 
+            # True Yield Calculation (Raw FCF / Raw Market Cap)
             return cash_flow / live_market_cap
 
         df["FCF_Yield"] = df.apply(calc_yield, axis=1)
+
+        # Calculate Swarm Pass for FCF Yield (> 5%)
         df["swarm_pass_cheap"] = df["FCF_Yield"].apply(
             lambda x: x > 0.05 if pd.notnull(x) else False
         )
@@ -203,6 +175,54 @@ def fetch_dol(ticker: str) -> pd.DataFrame:
     return pd.read_sql(query, engine, params={"ticker": ticker})
 
 
+# PHASE 2: TACTICAL RESPONDERS (QUARTERLY TABLES)
+
+
+def fetch_cfo_to_pat(ticker: str) -> pd.DataFrame:
+    query = text("""
+        WITH cfo_pat_data AS (
+            SELECT 
+                i."Ticker", i."ReportDate", 
+                i."NetIncome", 
+                c."TotalOperatingCashFlow"
+            FROM quarterly_income_statement i
+            JOIN yearly_indirect_cash_flow c 
+            ON i."Ticker" = c."Ticker" AND i."ReportDate" = c."ReportDate"
+            WHERE i."Ticker" = :ticker
+        )
+        SELECT 
+            "Ticker", "ReportDate",
+            "NetIncome", "TotalOperatingCashFlow" AS cfo,
+            CASE 
+                WHEN "NetIncome" IS NULL OR "NetIncome" = 0 THEN NULL
+                ELSE ROUND("TotalOperatingCashFlow" / "NetIncome", 2) 
+            END AS cfo_to_pat,
+            CASE 
+                WHEN "NetIncome" <= 0 THEN FALSE
+                WHEN ("TotalOperatingCashFlow" / "NetIncome") >= 0.80 THEN TRUE
+                ELSE FALSE 
+            END AS swarm_pass_quality_of_earnings
+        FROM cfo_pat_data
+        ORDER BY "ReportDate" DESC;
+    """)
+    return pd.read_sql(query, engine, params={"ticker": ticker})
+
+
+def fetch_operating_margin(ticker: str) -> pd.DataFrame:
+    query = text("""
+        SELECT 
+            "Ticker", "ReportDate",
+            CASE WHEN "TotalRevenue" = 0 OR "TotalRevenue" IS NULL THEN NULL 
+                 ELSE ROUND("OperatingIncome" / "TotalRevenue", 4) END AS operating_margin,
+            CASE WHEN "TotalRevenue" = 0 OR "TotalRevenue" IS NULL THEN FALSE 
+                 WHEN "OperatingIncome" > 0 THEN TRUE ELSE FALSE END AS swarm_pass_operating_margin
+        FROM quarterly_income_statement
+        WHERE "Ticker" = :ticker
+        ORDER BY "ReportDate" DESC;
+    """)
+    return pd.read_sql(query, engine, params={"ticker": ticker})
+
+
 def fetch_gross_margin(ticker: str) -> pd.DataFrame:
     query = text("""
         SELECT 
@@ -211,7 +231,7 @@ def fetch_gross_margin(ticker: str) -> pd.DataFrame:
                  ELSE ROUND("GrossProfit" / "TotalRevenue", 4) END AS gross_margin,
             CASE WHEN "TotalRevenue" = 0 OR "TotalRevenue" IS NULL THEN FALSE 
                  WHEN "GrossProfit" > 0 THEN TRUE ELSE FALSE END AS swarm_pass_gross_margin
-        FROM yearly_income_statement
+        FROM quarterly_income_statement
         WHERE "Ticker" = :ticker
         ORDER BY "ReportDate" DESC;
     """)
@@ -228,7 +248,7 @@ def fetch_interest_coverage(ticker: str) -> pd.DataFrame:
             CASE WHEN "NetInterestIncome" IS NULL OR "NetInterestIncome" = 0 THEN FALSE
                  WHEN ("OperatingIncome" / ABS("NetInterestIncome")) > 1.5 THEN TRUE 
                  ELSE FALSE END AS swarm_pass_solvency
-        FROM yearly_income_statement
+        FROM quarterly_income_statement
         WHERE "Ticker" = :ticker
         ORDER BY "ReportDate" DESC;
     """)
@@ -242,8 +262,8 @@ def fetch_asset_turnover(ticker: str) -> pd.DataFrame:
                 i."Ticker", i."ReportDate", 
                 i."TotalRevenue", 
                 b."TotalAssets"
-            FROM yearly_income_statement i
-            JOIN yearly_balance_sheet b 
+            FROM quarterly_income_statement i
+            JOIN quarterly_balance_sheet b 
             ON i."Ticker" = b."Ticker" AND i."ReportDate" = b."ReportDate"
             WHERE i."Ticker" = :ticker
         )
