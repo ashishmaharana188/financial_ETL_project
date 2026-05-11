@@ -29,8 +29,12 @@ from datetime import datetime
 runtime.load_models()
 
 # vantage api key
+# vantage api key
 API_KEY = "V6FLFA1K7ECKP0RK"
+# fmp api key
+FMP_API_KEY = "039c30159a83647be8f02d571df7f52a"
 # disable certificate warnings
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 pd.set_option("display.float_format", lambda x: "%.2f" % x)
@@ -179,6 +183,58 @@ def get_alpha_vantage(ticker, statement_type, api_key, cache_dir=CACHE_DIR):
         return None
 
 
+##FMP
+## Financial Modeling Prep (FMP)
+def get_fmp_financials(ticker, statement_type, freq, api_key, cache_dir=CACHE_DIR):
+    if freq not in ("quarter", "annual"):
+        raise ValueError("freq must be 'quarter' or 'annual'")
+
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir)
+
+    filename = f"fmp_{ticker}_{statement_type}_{freq}.json"
+    file_path = os.path.join(cache_dir, filename)
+
+    if os.path.exists(file_path):
+        print(f"Loading FMP {ticker} {statement_type} ({freq}) from local cache")
+        with open(file_path, "r") as f:
+            return json.load(f)
+
+    print(f"Fetching {ticker} {statement_type} ({freq}) from FMP...")
+
+    fmp_endpoints = {
+        "INCOME_STATEMENT": "income-statement",
+        "BALANCE_SHEET": "balance-sheet-statement",
+        "CASH_FLOW": "cash-flow-statement",
+    }
+    endpoint = fmp_endpoints[statement_type]
+
+    url = f"https://financialmodelingprep.com/api/v3/{endpoint}/{ticker}?limit=20&apikey={api_key}"
+    if freq == "quarter":
+        url += "&period=quarter"
+
+    try:
+        response = requests.get(url, timeout=15)
+        if response.status_code == 200:
+            data = response.json()
+            if data and isinstance(data, list) and len(data) > 0:
+                with open(file_path, "w") as f:
+                    json.dump(data, f)
+                return data
+            else:
+                print(f"FMP returned empty data for {ticker}. Check ticker format.")
+                return None
+        elif response.status_code == 429:
+            print(f"CRITICAL: FMP Daily Rate Limit Exceeded (429).")
+            return "LIMIT_REACHED"
+        else:
+            print(f"FMP Error {response.status_code} for {ticker}")
+            return None
+    except Exception as e:
+        print(f"FMP Request failed for {ticker}: {e}")
+        return None
+
+
 ## SCREENER SCRAPPER
 def get_screener_financials(ticker, report_type="yearly"):
     filename = f"screener_{ticker}_{report_type}.json"
@@ -304,25 +360,73 @@ def get_screener_financials(ticker, report_type="yearly"):
 ## ALL API CALL FUNCTION FOR FINANCIALS
 
 
-def fetch_all_financials(ticker):
+def fetch_all_financials(ticker, requested_source="auto"):
     """
-    Attempts to fetch a complete set of financials (IS, BS, CF) from a single source.
-    Enforces a strict "all-or-nothing" rule to prevent mixed-source validation errors.
+    Acts as a router. Fetches from the explicitly requested source.
+    If 'auto', it exhausts FMP daily limits before smoothly rolling to Alpha Vantage.
     """
     print(f"\n" + "=" * 40)
-    print(f"[{ticker}] INITIATING DATA FETCH")
+    print(f"[{ticker}] INITIATING DATA FETCH (Source: {requested_source.upper()})")
     print("=" * 40)
 
-    # ATTEMPT 1: YFINANCE (The Preferred Source)
-    print(f"[{ticker}] Attempting YFinance...")
-    try:
+    current_source = "fmp" if requested_source == "auto" else requested_source
+
+    # --- FINANCIAL MODELING PREP (FMP) ---
+    if current_source == "fmp":
+        print(f"[{ticker}] Pinging Financial Modeling Prep (FMP)...")
+        fmp_data = {}
+        limit_hit = False
+
+        for stmt in ["INCOME_STATEMENT", "BALANCE_SHEET", "CASH_FLOW"]:
+            for freq in ["annual", "quarter"]:
+                res = get_fmp_financials(ticker, stmt, freq, FMP_API_KEY)
+                if res == "LIMIT_REACHED":
+                    limit_hit = True
+                    break
+                fmp_data[f"{stmt}_{freq}"] = res
+                time.sleep(0.5)
+            if limit_hit:
+                break
+
+        if not limit_hit and all(v is not None for v in fmp_data.values()):
+            print(f"[{ticker}] SUCCESS: Complete FMP dataset acquired.")
+            return {"source": "fmp", "data": fmp_data}
+
+        if limit_hit and requested_source == "auto":
+            print(f"[{ticker}] AUTO-ROTATE TRIGGERED: Switching to Alpha Vantage...")
+            current_source = "vantage"
+        else:
+            print(f"[{ticker}] FMP fetch failed or incomplete.")
+            return None
+
+    # --- ALPHA VANTAGE (Slow-Drain Defense) ---
+    if current_source == "vantage":
+        print(f"[{ticker}] Pinging Alpha Vantage (Slow-Drain Active)...")
+
+        av_is = get_alpha_vantage(ticker, "INCOME_STATEMENT", API_KEY)
+        time.sleep(20)  # DEFENSE: Protects the 5/min limit
+        av_bs = get_alpha_vantage(ticker, "BALANCE_SHEET", API_KEY)
+        time.sleep(20)  # DEFENSE: Protects the 5/min limit
+        av_cf = get_alpha_vantage(ticker, "CASH_FLOW", API_KEY)
+
+        if av_is and av_bs and av_cf and "annualReports" in av_is:
+            print(f"[{ticker}] SUCCESS: Complete Alpha Vantage dataset acquired.")
+            return {
+                "source": "vantage",
+                "data": {"is": av_is, "bs": av_bs, "cf": av_cf},
+            }
+        print(f"[{ticker}] Alpha Vantage fetch incomplete.")
+        return None
+
+    # --- YAHOO FINANCE ---
+    if current_source == "yfinance":
+        print(f"[{ticker}] Pinging YFinance...")
         yf_is_q = get_yfinance(ticker, "INCOME_STATEMENT", "quarterly")
         yf_is_y = get_yfinance(ticker, "INCOME_STATEMENT", "yearly")
         yf_bs_q = get_yfinance(ticker, "BALANCE_SHEET", "quarterly")
         yf_bs_y = get_yfinance(ticker, "BALANCE_SHEET", "yearly")
         yf_cf_y = get_yfinance(ticker, "CASH_FLOW", "yearly")
 
-        # Note: YFinance often lacks Quarterly CF, so we only strictly require Yearly CF to pass
         if all(
             v is not None and not v.empty
             for v in [yf_is_q, yf_is_y, yf_bs_q, yf_bs_y, yf_cf_y]
@@ -336,34 +440,14 @@ def fetch_all_financials(ticker):
                     "bs_q": yf_bs_q,
                     "bs_y": yf_bs_y,
                     "cf_y": yf_cf_y,
-                    # Safely grab Q CF if it exists, otherwise pass None
                     "cf_q": get_yfinance(ticker, "CASH_FLOW", "quarterly"),
                 },
             }
-    except Exception as e:
-        print(f"[{ticker}] YFinance fetch encountered an error: {e}")
+        return None
 
-    # ATTEMPT 2: ALPHA VANTAGE
-
-    print(f"[{ticker}] YFinance incomplete. Attempting Alpha Vantage...")
-    try:
-        av_is = get_alpha_vantage(ticker, "INCOME_STATEMENT", API_KEY)
-        av_bs = get_alpha_vantage(ticker, "BALANCE_SHEET", API_KEY)
-        av_cf = get_alpha_vantage(ticker, "CASH_FLOW", API_KEY)
-
-        if av_is and av_bs and av_cf and "annualReports" in av_is:
-            print(f"[{ticker}] SUCCESS: Complete Alpha Vantage dataset acquired.")
-            return {
-                "source": "vantage",
-                "data": {"is": av_is, "bs": av_bs, "cf": av_cf},
-            }
-    except Exception as e:
-        print(f"[{ticker}] Alpha Vantage fetch encountered an error: {e}")
-
-    # ATTEMPT 3: SCREENER.IN
-
-    print(f"[{ticker}] Alpha Vantage incomplete. Attempting Screener.in...")
-    try:
+    # --- SCREENER.IN ---
+    if current_source == "screener":
+        print(f"[{ticker}] Pinging Screener.in...")
         sc_is_q = get_screener_financials(ticker, report_type="quarterly")
         sc_is_y = get_screener_financials(ticker, report_type="yearly")
         sc_bs_y = get_screener_financials(ticker, report_type="balance-sheet")
@@ -380,12 +464,8 @@ def fetch_all_financials(ticker):
                     "cf_y": sc_cf_y,
                 },
             }
-    except Exception as e:
-        print(f"[{ticker}] Screener fetch encountered an error: {e}")
+        return None
 
-    print(
-        f"[{ticker}] CRITICAL FAILURE: Could not acquire complete data from any source."
-    )
     return None
 
 
@@ -1294,7 +1374,7 @@ indirect_cf_buckets = [
 # CALL ALL API FUNCTION
 
 
-def run_etl_pipeline(target_tickers, ai_mode="local"):
+def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
     """
     Executes the ETL pipeline for the provided list of tickers and
     returns a summary matrix of the forensic validation results.
@@ -1313,7 +1393,7 @@ def run_etl_pipeline(target_tickers, ai_mode="local"):
 
         for ticker in target_tickers:
             # FETCH UNIFIED PAYLOAD
-            payload = fetch_all_financials(ticker)
+            payload = fetch_all_financials(ticker, requested_source)
 
             if not payload:
                 failed_tickers.append(ticker)
@@ -1378,6 +1458,44 @@ def run_etl_pipeline(target_tickers, ai_mode="local"):
                 dfBalanceSheetQ = None
                 dfCashFlowQ = None
 
+            elif source == "fmp":
+                dfIncomeStatementQ = (
+                    pd.DataFrame(data["INCOME_STATEMENT_quarter"])
+                    .set_index("date")
+                    .rename_axis(None)
+                    .T
+                )
+                dfIncomeStatementY = (
+                    pd.DataFrame(data["INCOME_STATEMENT_annual"])
+                    .set_index("date")
+                    .rename_axis(None)
+                    .T
+                )
+                dfBalanceSheetQ = (
+                    pd.DataFrame(data["BALANCE_SHEET_quarter"])
+                    .set_index("date")
+                    .rename_axis(None)
+                    .T
+                )
+                dfBalanceSheetY = (
+                    pd.DataFrame(data["BALANCE_SHEET_annual"])
+                    .set_index("date")
+                    .rename_axis(None)
+                    .T
+                )
+                dfCashFlowQ = (
+                    pd.DataFrame(data["CASH_FLOW_quarter"])
+                    .set_index("date")
+                    .rename_axis(None)
+                    .T
+                )
+                dfCashFlowY = (
+                    pd.DataFrame(data["CASH_FLOW_annual"])
+                    .set_index("date")
+                    .rename_axis(None)
+                    .T
+                )
+
             print(f"[{ticker}] Backing up raw data to JSONB Vault...")
 
             store_raw_data_jsonb(
@@ -1417,6 +1535,14 @@ def run_etl_pipeline(target_tickers, ai_mode="local"):
             elif source == "screener":
                 stmt_currency = "INR"
                 stmt_multiplier = 10.0
+            elif source == "fmp":
+                # Safely get the currency, default to USD
+                stmt_currency = (
+                    str(dfIncomeStatementY.loc["reportedCurrency"].iloc[0]).upper()
+                    if "reportedCurrency" in dfIncomeStatementY.index
+                    else "USD"
+                )
+                stmt_multiplier = 0.000001
 
             if dfIncomeStatementY is not None:
                 dfIncomeStatementY = clean_financial_dataframe(

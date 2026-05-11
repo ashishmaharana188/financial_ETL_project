@@ -84,6 +84,30 @@ if app_mode == "ETL Control Center":
             key="etl_ai_mode_radio",
         )
 
+    # NEW: Data Spigot Selector
+    st.caption("Data Spigot Configuration")
+    selected_spigot = st.radio(
+        "Select Primary Data Source (Auto-Rotate highly recommended to bypass API limits):",
+        [
+            "Auto-Rotate (FMP -> Alpha Vantage)",
+            "Financial Modeling Prep (FMP)",
+            "Alpha Vantage",
+            "Yahoo Finance",
+            "Screener.in",
+        ],
+        horizontal=True,
+        key="etl_spigot_radio",
+    )
+
+    # Map UI selection to the backend router strings
+    spigot_map = {
+        "Auto-Rotate (FMP -> Alpha Vantage)": "auto",
+        "Financial Modeling Prep (FMP)": "fmp",
+        "Alpha Vantage": "vantage",
+        "Yahoo Finance": "yfinance",
+        "Screener.in": "screener",
+    }
+
     if "pipeline_results" not in st.session_state:
         st.session_state.pipeline_results = None
 
@@ -100,13 +124,17 @@ if app_mode == "ETL Control Center":
                 t.strip().upper() for t in ticker_input.split(",") if t.strip()
             ]
             mode_param = "local" if "Local" in selected_mode else "cloud"
+            backend_source = spigot_map[selected_spigot]
 
             with st.spinner(
-                f"Executing pipeline for {len(target_tickers)} client(s)... Check terminal for logs."
+                f"Executing pipeline via {selected_spigot} for {len(target_tickers)} client(s)..."
             ):
                 try:
+                    # NEW: Passing the requested_source into the ETL engine
                     st.session_state.pipeline_results = run_etl_pipeline(
-                        target_tickers=target_tickers, ai_mode=mode_param
+                        target_tickers=target_tickers,
+                        ai_mode=mode_param,
+                        requested_source=backend_source,
                     )
                     st.success("ETL Batch Processing Complete!")
                 except Exception as e:
