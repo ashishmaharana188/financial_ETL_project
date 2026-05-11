@@ -6,7 +6,7 @@ import yfinance as yf
 # PHASE 1: STRUCTURAL ANCHORS (YEARLY TABLES)
 
 
-def fetch_ccc(ticker: str) -> pd.DataFrame:
+def fetch_ccc(ticker: str, data_source: str) -> pd.DataFrame:
     query = text("""
         WITH ccc_data AS (
             SELECT 
@@ -14,8 +14,8 @@ def fetch_ccc(ticker: str) -> pd.DataFrame:
                 i."TotalRevenue", i."CostOfRevenue",
                 b."Receivables", b."Inventory", b."PayablesAndAccruedExpenses"
             FROM yearly_income_statement i
-            JOIN yearly_balance_sheet b ON i."Ticker" = b."Ticker" AND i."ReportDate" = b."ReportDate"
-            WHERE i."Ticker" = :ticker
+            JOIN yearly_balance_sheet b ON i."Ticker" = b."Ticker" AND i."ReportDate" = b."ReportDate" AND i."DataSource" = b."DataSource"
+            WHERE i."Ticker" = :ticker AND i."DataSource" = :data_source
         )
         SELECT 
             "Ticker", "ReportDate",
@@ -30,10 +30,12 @@ def fetch_ccc(ticker: str) -> pd.DataFrame:
         FROM ccc_data
         ORDER BY "ReportDate" DESC;
     """)
-    return pd.read_sql(query, engine, params={"ticker": ticker})
+    return pd.read_sql(
+        query, engine, params={"ticker": ticker, "data_source": data_source}
+    )
 
 
-def fetch_debt_to_equity(ticker: str) -> pd.DataFrame:
+def fetch_debt_to_equity(ticker: str, data_source: str) -> pd.DataFrame:
     query = text("""
         SELECT 
             "Ticker", "ReportDate",
@@ -47,13 +49,15 @@ def fetch_debt_to_equity(ticker: str) -> pd.DataFrame:
                  WHEN ((COALESCE("CurrentDebtAndCapitalLeaseObligation", 0) + COALESCE("LongTermDebtAndCapitalLeaseObligation", 0)) / "StockholdersEquity") < 2.0 THEN TRUE 
                  ELSE FALSE END AS swarm_pass_leverage
         FROM yearly_balance_sheet
-        WHERE "Ticker" = :ticker
+        WHERE "Ticker" = :ticker AND "DataSource" = :data_source
         ORDER BY "ReportDate" DESC;
     """)
-    return pd.read_sql(query, engine, params={"ticker": ticker})
+    return pd.read_sql(
+        query, engine, params={"ticker": ticker, "data_source": data_source}
+    )
 
 
-def fetch_roic(ticker: str) -> pd.DataFrame:
+def fetch_roic(ticker: str, data_source: str) -> pd.DataFrame:
     query = text("""
         WITH roic_components AS (
             SELECT 
@@ -62,8 +66,8 @@ def fetch_roic(ticker: str) -> pd.DataFrame:
                 (COALESCE(b."CurrentDebtAndCapitalLeaseObligation", 0) + COALESCE(b."LongTermDebtAndCapitalLeaseObligation", 0)) AS total_debt,
                 COALESCE(b."CashCashEquivalentsAndShortTermInvestments", 0) AS cash
             FROM yearly_income_statement i
-            JOIN yearly_balance_sheet b ON i."Ticker" = b."Ticker" AND i."ReportDate" = b."ReportDate"
-            WHERE i."Ticker" = :ticker
+            JOIN yearly_balance_sheet b ON i."Ticker" = b."Ticker" AND i."ReportDate" = b."ReportDate" AND i."DataSource" = b."DataSource"
+            WHERE i."Ticker" = :ticker AND i."DataSource" = :data_source
         )
         SELECT 
             "Ticker", "ReportDate",
@@ -77,10 +81,12 @@ def fetch_roic(ticker: str) -> pd.DataFrame:
         FROM roic_components
         ORDER BY "ReportDate" DESC;
     """)
-    return pd.read_sql(query, engine, params={"ticker": ticker})
+    return pd.read_sql(
+        query, engine, params={"ticker": ticker, "data_source": data_source}
+    )
 
 
-def fetch_fcf_yield(ticker: str) -> pd.DataFrame:
+def fetch_fcf_yield(ticker: str, data_source: str) -> pd.DataFrame:
     query = text("""
         SELECT 
             "Ticker", "ReportDate", "Currency",
@@ -88,10 +94,12 @@ def fetch_fcf_yield(ticker: str) -> pd.DataFrame:
             ("TotalOperatingCashFlow" - ABS(COALESCE("CapExPurchaseOfPPE", 0))) AS free_cash_flow,
             CASE WHEN ("TotalOperatingCashFlow" - ABS(COALESCE("CapExPurchaseOfPPE", 0))) > 0 THEN TRUE ELSE FALSE END AS swarm_pass_positive_fcf
         FROM yearly_indirect_cash_flow
-        WHERE "Ticker" = :ticker
+        WHERE "Ticker" = :ticker AND "DataSource" = :data_source
         ORDER BY "ReportDate" DESC;
     """)
-    df = pd.read_sql(query, engine, params={"ticker": ticker})
+    df = pd.read_sql(
+        query, engine, params={"ticker": ticker, "data_source": data_source}
+    )
 
     if not df.empty:
         try:
@@ -145,7 +153,7 @@ def fetch_fcf_yield(ticker: str) -> pd.DataFrame:
     return df
 
 
-def fetch_dol(ticker: str) -> pd.DataFrame:
+def fetch_dol(ticker: str, data_source: str) -> pd.DataFrame:
     query = text("""
         WITH lag_data AS (
             SELECT 
@@ -154,7 +162,7 @@ def fetch_dol(ticker: str) -> pd.DataFrame:
                 "OperatingIncome",
                 LAG("OperatingIncome") OVER (PARTITION BY "Ticker" ORDER BY "ReportDate" ASC) AS prev_operating_income
             FROM yearly_income_statement
-            WHERE "Ticker" = :ticker
+            WHERE "Ticker" = :ticker AND "DataSource" = :data_source
         ),
         pct_changes AS (
             SELECT 
@@ -172,13 +180,15 @@ def fetch_dol(ticker: str) -> pd.DataFrame:
         FROM pct_changes
         ORDER BY "ReportDate" DESC;
     """)
-    return pd.read_sql(query, engine, params={"ticker": ticker})
+    return pd.read_sql(
+        query, engine, params={"ticker": ticker, "data_source": data_source}
+    )
 
 
 # PHASE 2: TACTICAL RESPONDERS (QUARTERLY TABLES)
 
 
-def fetch_cfo_to_pat(ticker: str) -> pd.DataFrame:
+def fetch_cfo_to_pat(ticker: str, data_source: str) -> pd.DataFrame:
     query = text("""
         WITH cfo_pat_data AS (
             SELECT 
@@ -187,8 +197,8 @@ def fetch_cfo_to_pat(ticker: str) -> pd.DataFrame:
                 c."TotalOperatingCashFlow"
             FROM quarterly_income_statement i
             JOIN yearly_indirect_cash_flow c 
-            ON i."Ticker" = c."Ticker" AND i."ReportDate" = c."ReportDate"
-            WHERE i."Ticker" = :ticker
+            ON i."Ticker" = c."Ticker" AND i."ReportDate" = c."ReportDate" AND i."DataSource" = c."DataSource"
+            WHERE i."Ticker" = :ticker AND i."DataSource" = :data_source
         )
         SELECT 
             "Ticker", "ReportDate",
@@ -205,10 +215,12 @@ def fetch_cfo_to_pat(ticker: str) -> pd.DataFrame:
         FROM cfo_pat_data
         ORDER BY "ReportDate" DESC;
     """)
-    return pd.read_sql(query, engine, params={"ticker": ticker})
+    return pd.read_sql(
+        query, engine, params={"ticker": ticker, "data_source": data_source}
+    )
 
 
-def fetch_operating_margin(ticker: str) -> pd.DataFrame:
+def fetch_operating_margin(ticker: str, data_source: str) -> pd.DataFrame:
     query = text("""
         SELECT 
             "Ticker", "ReportDate",
@@ -217,13 +229,15 @@ def fetch_operating_margin(ticker: str) -> pd.DataFrame:
             CASE WHEN "TotalRevenue" = 0 OR "TotalRevenue" IS NULL THEN FALSE 
                  WHEN "OperatingIncome" > 0 THEN TRUE ELSE FALSE END AS swarm_pass_operating_margin
         FROM quarterly_income_statement
-        WHERE "Ticker" = :ticker
+        WHERE "Ticker" = :ticker AND "DataSource" = :data_source
         ORDER BY "ReportDate" DESC;
     """)
-    return pd.read_sql(query, engine, params={"ticker": ticker})
+    return pd.read_sql(
+        query, engine, params={"ticker": ticker, "data_source": data_source}
+    )
 
 
-def fetch_gross_margin(ticker: str) -> pd.DataFrame:
+def fetch_gross_margin(ticker: str, data_source: str) -> pd.DataFrame:
     query = text("""
         SELECT 
             "Ticker", "ReportDate",
@@ -232,30 +246,46 @@ def fetch_gross_margin(ticker: str) -> pd.DataFrame:
             CASE WHEN "TotalRevenue" = 0 OR "TotalRevenue" IS NULL THEN FALSE 
                  WHEN "GrossProfit" > 0 THEN TRUE ELSE FALSE END AS swarm_pass_gross_margin
         FROM quarterly_income_statement
-        WHERE "Ticker" = :ticker
+        WHERE "Ticker" = :ticker AND "DataSource" = :data_source
         ORDER BY "ReportDate" DESC;
     """)
-    return pd.read_sql(query, engine, params={"ticker": ticker})
+    return pd.read_sql(
+        query, engine, params={"ticker": ticker, "data_source": data_source}
+    )
 
 
-def fetch_interest_coverage(ticker: str) -> pd.DataFrame:
+def fetch_interest_coverage(ticker: str, data_source: str) -> pd.DataFrame:
     query = text("""
         SELECT 
             "Ticker", "ReportDate",
             "OperatingIncome", "NetInterestIncome",
-            CASE WHEN "NetInterestIncome" IS NULL OR "NetInterestIncome" = 0 THEN NULL
-                 ELSE ROUND("OperatingIncome" / ABS("NetInterestIncome"), 2) END AS interest_coverage,
-            CASE WHEN "NetInterestIncome" IS NULL OR "NetInterestIncome" = 0 THEN FALSE
-                 WHEN ("OperatingIncome" / ABS("NetInterestIncome")) > 1.5 THEN TRUE 
-                 ELSE FALSE END AS swarm_pass_solvency
+            
+            -- FIX: Winsorize (Cap) the Coverage Math at 99.99x to protect regression models
+            CASE 
+                WHEN "NetInterestIncome" IS NULL OR "NetInterestIncome" = 0 THEN NULL
+                WHEN "NetInterestIncome" > 0 THEN 99.99
+                WHEN ("OperatingIncome" / ABS("NetInterestIncome")) > 99.99 THEN 99.99
+                ELSE ROUND("OperatingIncome" / ABS("NetInterestIncome"), 2) 
+            END AS interest_coverage,
+            
+            -- Solvency Triage remains the same
+            CASE 
+                WHEN "NetInterestIncome" IS NULL THEN FALSE
+                WHEN "NetInterestIncome" >= 0 THEN TRUE 
+                WHEN ("OperatingIncome" / ABS("NetInterestIncome")) > 1.5 THEN TRUE 
+                ELSE FALSE 
+            END AS swarm_pass_solvency
+            
         FROM quarterly_income_statement
-        WHERE "Ticker" = :ticker
+        WHERE "Ticker" = :ticker AND "DataSource" = :data_source
         ORDER BY "ReportDate" DESC;
     """)
-    return pd.read_sql(query, engine, params={"ticker": ticker})
+    return pd.read_sql(
+        query, engine, params={"ticker": ticker, "data_source": data_source}
+    )
 
 
-def fetch_asset_turnover(ticker: str) -> pd.DataFrame:
+def fetch_asset_turnover(ticker: str, data_source: str) -> pd.DataFrame:
     query = text("""
         WITH at_data AS (
             SELECT 
@@ -264,8 +294,8 @@ def fetch_asset_turnover(ticker: str) -> pd.DataFrame:
                 b."TotalAssets"
             FROM quarterly_income_statement i
             JOIN quarterly_balance_sheet b 
-            ON i."Ticker" = b."Ticker" AND i."ReportDate" = b."ReportDate"
-            WHERE i."Ticker" = :ticker
+            ON i."Ticker" = b."Ticker" AND i."ReportDate" = b."ReportDate" AND i."DataSource" = b."DataSource"
+            WHERE i."Ticker" = :ticker AND i."DataSource" = :data_source
         )
         SELECT 
             "Ticker", "ReportDate",
@@ -275,4 +305,6 @@ def fetch_asset_turnover(ticker: str) -> pd.DataFrame:
         FROM at_data
         ORDER BY "ReportDate" DESC;
     """)
-    return pd.read_sql(query, engine, params={"ticker": ticker})
+    return pd.read_sql(
+        query, engine, params={"ticker": ticker, "data_source": data_source}
+    )

@@ -37,6 +37,15 @@ app_mode = st.sidebar.radio(
 )
 
 st.sidebar.divider()
+st.sidebar.markdown("### ⚙️ Engine Settings")
+selected_source = st.sidebar.selectbox(
+    "Primary Data Source",
+    options=["vantage", "yfinance", "screener"],
+    index=0,
+    help="Strictly isolates all mathematical models to data provided by this specific spigot.",
+)
+
+st.sidebar.divider()
 st.sidebar.caption("System Status: Online")
 st.sidebar.caption("Database: PostgreSQL Connected")
 
@@ -246,20 +255,22 @@ elif app_mode == "Single Company Deep Dive":
             key="single_db_ticker_selectbox",
         )
 
-        with st.spinner(f"Running Forensic Scan for {selected_db_ticker}..."):
-            # Fetch Phase 1: Structural Anchors
-            df_roic = fetch_roic(selected_db_ticker)
-            df_fcf = fetch_fcf_yield(selected_db_ticker)
-            df_de = fetch_debt_to_equity(selected_db_ticker)
-            df_ccc = fetch_ccc(selected_db_ticker)
-            df_dol = fetch_dol(selected_db_ticker)
+        with st.spinner(
+            f"Running Forensic Scan for {selected_db_ticker} using {selected_source.upper()} data..."
+        ):
+            # Fetch Phase 1: Structural Anchors (Strictly Isolated)
+            df_roic = fetch_roic(selected_db_ticker, selected_source)
+            df_fcf = fetch_fcf_yield(selected_db_ticker, selected_source)
+            df_de = fetch_debt_to_equity(selected_db_ticker, selected_source)
+            df_ccc = fetch_ccc(selected_db_ticker, selected_source)
+            df_dol = fetch_dol(selected_db_ticker, selected_source)
 
-            # Fetch Phase 2: Tactical Responders
-            df_op_margin = fetch_operating_margin(selected_db_ticker)
-            df_gr_margin = fetch_gross_margin(selected_db_ticker)
-            df_int_cov = fetch_interest_coverage(selected_db_ticker)
-            df_cfo_pat = fetch_cfo_to_pat(selected_db_ticker)
-            df_turnover = fetch_asset_turnover(selected_db_ticker)
+            # Fetch Phase 2: Tactical Responders (Strictly Isolated)
+            df_op_margin = fetch_operating_margin(selected_db_ticker, selected_source)
+            df_gr_margin = fetch_gross_margin(selected_db_ticker, selected_source)
+            df_int_cov = fetch_interest_coverage(selected_db_ticker, selected_source)
+            df_cfo_pat = fetch_cfo_to_pat(selected_db_ticker, selected_source)
+            df_turnover = fetch_asset_turnover(selected_db_ticker, selected_source)
 
             # --- TOP LEVEL: STRUCTURAL HEALTH (PHASE 1) ---
             st.divider()
@@ -628,8 +639,9 @@ elif app_mode == "Market Overview":
                     t = row["Ticker"]
                     c_name = row["CompanyName"]
 
-                    df_roic_tmp = fetch_roic(t)
-                    df_fcf_tmp = fetch_fcf_yield(t)
+                    # Strictly isolate the market scan to the selected spigot
+                    df_roic_tmp = fetch_roic(t, selected_source)
+                    df_fcf_tmp = fetch_fcf_yield(t, selected_source)
 
                     if not df_roic_tmp.empty and not df_fcf_tmp.empty:
                         latest_roic = (

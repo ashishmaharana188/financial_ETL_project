@@ -98,42 +98,53 @@
     "CashCashEquivalentsAndShortTermInvestments": [
       "CashCashEquivalentsAndShortTermInvestments",
       "CashAndCashEquivalents",
-      "CashFinancial"
+      "CashFinancial",
+      "CashAndShortTermInvestments",
+      "CashAndCashEquivalentsAtCarryingValue"
     ],
-    "Receivables": ["Receivables", "AccountsReceivable", "TradeReceivables"],
+    "Receivables": [
+      "Receivables",
+      "AccountsReceivable",
+      "TradeReceivables",
+      "CurrentNetReceivables"
+    ],
     "Inventory": ["Inventory", "Inventories"],
-    "CurrentAssets": ["CurrentAssets"],
+    "CurrentAssets": ["CurrentAssets", "TotalCurrentAssets"],
     "TotalNonCurrentAssets": ["TotalNonCurrentAssets"],
     "GrossPPE": ["GrossPPE", "GrossPpe", "GrossBlock"],
     "AccumulatedDepreciation": ["AccumulatedDepreciation"],
-    "NetPPE": ["NetPPE", "NetPpe", "FixedAssets"],
+    "NetPPE": ["NetPPE", "NetPpe", "FixedAssets", "PropertyPlantEquipment"],
     "TotalAssets": ["TotalAssets"],
     "PayablesAndAccruedExpenses": [
       "PayablesAndAccruedExpenses",
       "AccountsPayable",
-      "Payables"
+      "Payables",
+      "CurrentAccountsPayable"
     ],
     "CurrentDebtAndCapitalLeaseObligation": [
       "CurrentDebtAndCapitalLeaseObligation",
       "CurrentDebt",
-      "CurrentCapitalLeaseObligation"
+      "CurrentCapitalLeaseObligation",
+      "ShortTermDebt"
     ],
     "TotalTaxPayable": ["TotalTaxPayable", "TaxesPayable"],
-    "CurrentLiabilities": ["CurrentLiabilities"],
+    "CurrentLiabilities": ["CurrentLiabilities", "TotalCurrentLiabilities"],
     "LongTermDebtAndCapitalLeaseObligation": [
       "LongTermDebtAndCapitalLeaseObligation",
       "LongTermDebt",
       "LongTermCapitalLeaseObligation"
     ],
     "TotalLiabilitiesNetMinorityInterest": [
-      "TotalLiabilitiesNetMinorityInterest"
+      "TotalLiabilitiesNetMinorityInterest",
+      "TotalLiabilities"
     ],
     "CapitalStock": ["CapitalStock", "CommonStock", "EquityCapital"],
     "RetainedEarnings": ["RetainedEarnings", "Reserves"],
     "StockholdersEquity": [
       "TotalEquityGrossMinorityInterest",
       "StockholdersEquity",
-      "CommonStockEquity"
+      "CommonStockEquity",
+      "TotalShareholderEquity"
     ],
     "CashEquivalents": ["CashEquivalents"],
     "ShortTermInvestments": [
@@ -242,6 +253,7 @@
       [
         "DepreciationAmortizationDepletion",
         "DepreciationAndAmortization",
+        "DepreciationDepletionAndAmortization",
         "Depreciation",
         "AmortizationCashFlow"
       ]
@@ -289,6 +301,7 @@
     "TotalOperatingCashFlow": [
       [
         "OperatingCashFlow",
+        "OperatingCashflow",
         "CashFlowFromContinuingOperatingActivities",
         "CashFromOperatingActivity"
       ]
@@ -297,6 +310,7 @@
     "CapExPurchaseOfPPE": [
       [
         "CapitalExpenditure",
+        "CapitalExpenditures",
         "PurchaseOfPpe",
         "FixedAssetsPurchased",
         "NetPPEPurchaseAndSale",
@@ -331,6 +345,7 @@
     "TotalInvestingCashFlow": [
       [
         "InvestingCashFlow",
+        "CashflowFromInvestment",
         "CashFlowFromContinuingInvestingActivities",
         "CashFromInvestingActivity"
       ]
@@ -356,13 +371,25 @@
         "IssuanceOfCapitalStock",
         "CommonStockIssuance",
         "ProceedsFromShares",
-        "NetCommonStockIssuance"
+        "NetCommonStockIssuance",
+        "ProceedsFromIssuanceOfCommonStock"
       ],
-      ["RepurchaseOfCapitalStock", "CommonStockPayments"],
+      [
+        "RepurchaseOfCapitalStock",
+        "CommonStockPayments",
+        "ProceedsFromRepurchaseOfEquity",
+        "PaymentsForRepurchaseOfEquity"
+      ],
       ["TaxesPaidRelatedToNetShareSettlementOfEquityAwards"]
     ],
     "DividendsPaid": [
-      ["CashDividendsPaid", "CommonStockDividendPaid", "DividendsPaid"]
+      [
+        "CashDividendsPaid",
+        "CommonStockDividendPaid",
+        "DividendsPaid",
+        "DividendPayout",
+        "DividendPayoutCommonStock"
+      ]
     ],
     "OtherFinancingActivities": [
       ["NetOtherFinancingCharges", "OtherFinancingItems"],
@@ -372,6 +399,7 @@
     "TotalFinancingCashFlow": [
       [
         "FinancingCashFlow",
+        "CashflowFromFinancing",
         "CashFlowFromContinuingFinancingActivities",
         "CashFromFinancingActivity"
       ]
