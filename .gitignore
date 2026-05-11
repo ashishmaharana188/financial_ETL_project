@@ -3,7 +3,7 @@
 
 venv/
 env/
-offline_statements/
+
 __pycache__/
 *.py[cod]
 *$py.class
