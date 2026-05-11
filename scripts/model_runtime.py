@@ -1,3 +1,9 @@
+import os
+import warnings
+
+warnings.filterwarnings("ignore", category=FutureWarning, module="transformers")
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import gc
 import requests
 import torch

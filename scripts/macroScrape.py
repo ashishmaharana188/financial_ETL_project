@@ -2,6 +2,7 @@ import yfinance as yf
 import pandas as pd
 from tvDatafeed import TvDatafeed, Interval
 from sqlalchemy import text
+from scripts.database import engine
 
 
 def fetch_hybrid_macro_data(period_days=1000):
@@ -100,11 +101,17 @@ def push_to_database(df):
         print(f"DATABASE ERROR\n{e}")
 
 
-if __name__ == "__main__":
-    final_df = fetch_hybrid_macro_data(
-        period_days=1500
-    )  # Roughly 5 years of trading days
+def run_macro_pipeline(period_days=1500):
+    print(f"\nStarting Macro Pipeline for {period_days} days...")
+    final_df = fetch_hybrid_macro_data(period_days=period_days)
+
     if not final_df.empty:
         push_to_database(final_df)
+        return True, len(final_df)
     else:
         print("Pipeline aborted: No data extracted.")
+        return False, 0
+
+
+if __name__ == "__main__":
+    success, rows = run_macro_pipeline()

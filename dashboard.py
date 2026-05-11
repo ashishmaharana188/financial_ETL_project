@@ -12,22 +12,15 @@ from scripts.ratioAnalysis import (
     fetch_fcf_yield,
     fetch_dol,
 )
+from scripts.macroScrape import run_macro_pipeline
 
-# Note: Import your AI runtime here when ready to activate the memo
-# from scripts.model_runtime import runtime
-
-# ==========================================
-# PAGE CONFIGURATION
-# ==========================================
 st.set_page_config(
     page_title="Swarm Intelligence Platform",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ==========================================
-# SIDEBAR NAVIGATION
-# ==========================================
+
 st.sidebar.title("Swarm Intelligence")
 st.sidebar.markdown("Institutional Quantitative Platform")
 st.sidebar.divider()
@@ -43,14 +36,31 @@ st.sidebar.caption("System Status: Online")
 st.sidebar.caption("Database: PostgreSQL Connected")
 
 
-# ==========================================
-# MODULE 1: ETL CONTROL CENTER
-# ==========================================
 if app_mode == "ETL Control Center":
     st.title("ETL Control Center")
     st.markdown(
         "Run the mathematically validated pipeline on target companies and monitor forensic outputs."
     )
+
+    st.subheader("Macro Trends")
+    st.markdown(
+        "Fetch global economic weather: US/IN 10Y Yields, Brent Crude, and DXY."
+    )
+
+    if st.button("Run Macro Pipeline", type="secondary", key="macro_start_button"):
+        with st.spinner("Executing hybrid spigots... Check terminal for logs."):
+            try:
+                success, row_count = run_macro_pipeline()
+                if success:
+                    st.success(
+                        f"Macro Pipeline Complete! {row_count} daily records upserted."
+                    )
+                else:
+                    st.warning("Pipeline executed but no data was extracted.")
+            except Exception as e:
+                st.error(f"Macro pipeline crashed during execution: {e}")
+
+    st.divider()
 
     st.subheader("Execute ETL Batch")
 
@@ -182,9 +192,6 @@ if app_mode == "ETL Control Center":
                     st.dataframe(clean_df, use_container_width=True)
 
 
-# ==========================================
-# MODULE 2: SINGLE COMPANY DEEP DIVE
-# ==========================================
 elif app_mode == "Single Company Deep Dive":
     st.title("Single Company Deep Dive")
 
@@ -374,9 +381,6 @@ elif app_mode == "Single Company Deep Dive":
                 st.dataframe(df_dol, use_container_width=True, hide_index=True)
 
 
-# ==========================================
-# MODULE 3: MARKET OVERVIEW
-# ==========================================
 elif app_mode == "Market Overview":
     st.title("Market Overview")
     st.markdown("Cross-sectional ranking and quadrant analysis.")
