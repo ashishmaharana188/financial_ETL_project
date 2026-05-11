@@ -30,7 +30,7 @@ runtime.load_models()
 
 # vantage api key
 # vantage api key
-API_KEY = "V6FLFA1K7ECKP0RK"
+API_KEY = "875S8KE5GDSRVN1Z"
 # fmp api key
 FMP_API_KEY = "039c30159a83647be8f02d571df7f52a"
 # disable certificate warnings
@@ -1437,17 +1437,29 @@ def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
                     .rename_axis(None)
                     .T
                 )
-                dfBalanceSheetQ = pd.DataFrame(
-                    data["bs"]["quarterlyReports"]
-                ).set_index("fiscalDateEnding")
-                dfBalanceSheetY = pd.DataFrame(data["bs"]["annualReports"]).set_index(
-                    "fiscalDateEnding"
+                dfBalanceSheetQ = (
+                    pd.DataFrame(data["bs"]["quarterlyReports"])
+                    .set_index("fiscalDateEnding")
+                    .rename_axis(None)
+                    .T
                 )
-                dfCashFlowQ = pd.DataFrame(data["cf"]["quarterlyReports"]).set_index(
-                    "fiscalDateEnding"
+                dfBalanceSheetY = (
+                    pd.DataFrame(data["bs"]["annualReports"])
+                    .set_index("fiscalDateEnding")
+                    .rename_axis(None)
+                    .T
                 )
-                dfCashFlowY = pd.DataFrame(data["cf"]["annualReports"]).set_index(
-                    "fiscalDateEnding"
+                dfCashFlowQ = (
+                    pd.DataFrame(data["cf"]["quarterlyReports"])
+                    .set_index("fiscalDateEnding")
+                    .rename_axis(None)
+                    .T
+                )
+                dfCashFlowY = (
+                    pd.DataFrame(data["cf"]["annualReports"])
+                    .set_index("fiscalDateEnding")
+                    .rename_axis(None)
+                    .T
                 )
 
             elif source == "screener":
@@ -1579,7 +1591,7 @@ def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
                         dfIncomeStatementY
                     )
 
-            if source in ["yfinance", "screener"]:
+            if source in ["yfinance", "screener", "vantage", "fmp"]:
                 is_keys = ittelson_income_statement_columns + [
                     "PretaxIncome",
                     "MaterialCost",
