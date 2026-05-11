@@ -16,6 +16,7 @@ from scripts.ratioAnalysis import (
     fetch_asset_turnover,
 )
 from scripts.macroScrape import run_macro_pipeline
+from scripts.macroAnalysis import Phase2_OLS_Engine
 
 st.set_page_config(
     page_title="Swarm Intelligence Platform",
@@ -201,7 +202,7 @@ elif app_mode == "Single Company Deep Dive":
     try:
         with engine.connect() as conn:
             tickers_df = pd.read_sql(
-                'SELECT DISTINCT "Ticker" FROM yearly_income_statement', conn
+                'SELECT DISTINCT "Ticker" FROM quarterly_income_statement', conn
             )
             available_db_tickers = tickers_df["Ticker"].tolist()
     except Exception as e:
@@ -234,7 +235,7 @@ elif app_mode == "Single Company Deep Dive":
 
             st.divider()
 
-            # --- TOP SECTION: FOCUSED KPI CARDS ---
+            # --- TOP SECTION: ORIGINAL FOCUSED KPI CARDS ---
             st.subheader("Key Ratios (Latest FY)")
             kpi_c1, kpi_c2, kpi_c3, kpi_c4, kpi_c5 = st.columns(5)
 
@@ -351,98 +352,205 @@ elif app_mode == "Single Company Deep Dive":
                     )
                     st.line_chart(de_chart)
 
-            # --- ORIGINAL AI MEMO GENERATOR ---
+            # --- BOTTOM SECTION: FULL DETAILS ---
             st.divider()
-            st.subheader("Chief Investment Officer (CIO) Summary")
-            if st.button("Generate AI Investment Memo", type="primary"):
-                with st.spinner("AI is analyzing the financial blueprint..."):
-                    st.success("Analysis Complete")
-                    st.markdown(f"""
-                    **Executive Summary for {selected_db_ticker}**
-                    * **Efficiency:** The current ROIC of {latest_roic:.2f}% indicates how effectively capital is being deployed.
-                    * **Valuation:** An FCF Yield of {latest_fcf:.2f}% acts as the cash-backed floor for current valuation.
-                    * **Leverage:** A D/E ratio of {latest_de:.2f} frames the survival risk of the balance sheet.
-                    """)
+            with st.expander("View Detailed Financial Ratios", expanded=False):
+                # Format original percentages
+                if "operating_margin" in df_margin.columns:
+                    df_margin.insert(
+                        df_margin.columns.get_loc("operating_margin") + 1,
+                        "Margin (%)",
+                        (df_margin["operating_margin"] * 100).apply(
+                            lambda x: f"{x:.2f}%" if pd.notnull(x) else None
+                        ),
+                    )
+                if "roic" in df_roic.columns:
+                    df_roic.insert(
+                        df_roic.columns.get_loc("roic") + 1,
+                        "ROIC (%)",
+                        (df_roic["roic"] * 100).apply(
+                            lambda x: f"{x:.2f}%" if pd.notnull(x) else None
+                        ),
+                    )
+                if "FCF_Yield" in df_fcf.columns:
+                    df_fcf.insert(
+                        df_fcf.columns.get_loc("FCF_Yield") + 1,
+                        "Yield (%)",
+                        (df_fcf["FCF_Yield"] * 100).apply(
+                            lambda x: f"{x:.2f}%" if pd.notnull(x) else None
+                        ),
+                    )
+                if "rev_growth_pct" in df_dol.columns:
+                    df_dol.insert(
+                        df_dol.columns.get_loc("rev_growth_pct") + 1,
+                        "Rev Growth (%)",
+                        df_dol["rev_growth_pct"].apply(
+                            lambda x: f"{x:.2f}%" if pd.notnull(x) else None
+                        ),
+                    )
+                if "ebit_growth_pct" in df_dol.columns:
+                    df_dol.insert(
+                        df_dol.columns.get_loc("ebit_growth_pct") + 1,
+                        "EBIT Growth (%)",
+                        df_dol["ebit_growth_pct"].apply(
+                            lambda x: f"{x:.2f}%" if pd.notnull(x) else None
+                        ),
+                    )
+                if "gross_margin" in df_gross.columns:
+                    df_gross.insert(
+                        df_gross.columns.get_loc("gross_margin") + 1,
+                        "Gross (%)",
+                        (df_gross["gross_margin"] * 100).apply(
+                            lambda x: f"{x:.2f}%" if pd.notnull(x) else None
+                        ),
+                    )
 
-            # --- BOTTOM SECTION: FULL DETAILS (ORIGINAL + NEW) ---
+                colA, colB = st.columns(2)
+                with colA:
+                    st.markdown("#### 1. Cash Conversion Cycle")
+                    st.dataframe(df_ccc, use_container_width=True, hide_index=True)
+                    st.markdown("#### 2. Quality of Earnings (CFO / PAT)")
+                    st.dataframe(df_cfo_pat, use_container_width=True, hide_index=True)
+                    st.markdown("#### 3. Operating Margin")
+                    st.dataframe(df_margin, use_container_width=True, hide_index=True)
+                    st.markdown("#### 4. Debt-to-Equity")
+                    st.dataframe(df_leverage, use_container_width=True, hide_index=True)
+                    st.markdown("#### 8. Gross Margin")
+                    st.dataframe(df_gross, use_container_width=True, hide_index=True)
+                with colB:
+                    st.markdown("#### 5. Return on Invested Capital")
+                    st.dataframe(df_roic, use_container_width=True, hide_index=True)
+                    st.markdown("#### 6. Live FCF Yield")
+                    st.dataframe(df_fcf, use_container_width=True, hide_index=True)
+                    st.markdown("#### 7. Degree of Operating Leverage")
+                    st.dataframe(df_dol, use_container_width=True, hide_index=True)
+                    st.markdown("#### 9. Interest Coverage")
+                    st.dataframe(df_interest, use_container_width=True, hide_index=True)
+                    st.markdown("#### 10. Asset Turnover")
+                    st.dataframe(df_turnover, use_container_width=True, hide_index=True)
+
             st.divider()
-            st.subheader("Detailed Financial Ratios")
+            st.header("Phase 2: OLS Macro Bridge & Forensic Triage")
+            st.markdown(
+                "Analyze how the 8 Macro Beams dictate the Micro Pillars, and manually triage structural outliers."
+            )
 
-            # Format original percentages
-            if "operating_margin" in df_margin.columns:
-                df_margin.insert(
-                    df_margin.columns.get_loc("operating_margin") + 1,
-                    "Margin (%)",
-                    (df_margin["operating_margin"] * 100).apply(
-                        lambda x: f"{x:.2f}%" if pd.notnull(x) else None
-                    ),
+            # 1. Fetch and format the live Macro Spigot data from DB
+            try:
+                macro_query = text(
+                    'SELECT "ReportDate", "IndicatorName", "Value" FROM macro_indicators'
                 )
-            if "roic" in df_roic.columns:
-                df_roic.insert(
-                    df_roic.columns.get_loc("roic") + 1,
-                    "ROIC (%)",
-                    (df_roic["roic"] * 100).apply(
-                        lambda x: f"{x:.2f}%" if pd.notnull(x) else None
-                    ),
+                macro_raw = pd.read_sql(macro_query, engine)
+                macro_df = macro_raw.pivot(
+                    index="ReportDate", columns="IndicatorName", values="Value"
                 )
-            if "FCF_Yield" in df_fcf.columns:
-                df_fcf.insert(
-                    df_fcf.columns.get_loc("FCF_Yield") + 1,
-                    "Yield (%)",
-                    (df_fcf["FCF_Yield"] * 100).apply(
-                        lambda x: f"{x:.2f}%" if pd.notnull(x) else None
-                    ),
-                )
-            if "rev_growth_pct" in df_dol.columns:
-                df_dol.insert(
-                    df_dol.columns.get_loc("rev_growth_pct") + 1,
-                    "Rev Growth (%)",
-                    df_dol["rev_growth_pct"].apply(
-                        lambda x: f"{x:.2f}%" if pd.notnull(x) else None
-                    ),
-                )
-            if "ebit_growth_pct" in df_dol.columns:
-                df_dol.insert(
-                    df_dol.columns.get_loc("ebit_growth_pct") + 1,
-                    "EBIT Growth (%)",
-                    df_dol["ebit_growth_pct"].apply(
-                        lambda x: f"{x:.2f}%" if pd.notnull(x) else None
-                    ),
-                )
+                macro_df.index = pd.to_datetime(macro_df.index)
+            except Exception as e:
+                st.error(f"Failed to load Macro Database: {e}")
+                macro_df = pd.DataFrame()
 
-            # Format new percentages
-            if "gross_margin" in df_gross.columns:
-                df_gross.insert(
-                    df_gross.columns.get_loc("gross_margin") + 1,
-                    "Gross (%)",
-                    (df_gross["gross_margin"] * 100).apply(
-                        lambda x: f"{x:.2f}%" if pd.notnull(x) else None
+            if not macro_df.empty:
+                # 2. UI Selector for the Target Pillar
+                target_options = {
+                    "Operating Margin (Primary Bridge)": (
+                        "operating_margin",
+                        df_margin,
                     ),
+                    "Gross Margin (Anchor)": ("gross_margin", df_gross),
+                    "Interest Coverage (Solvency)": ("interest_coverage", df_interest),
+                    "Asset Turnover (Productivity)": ("asset_turnover", df_turnover),
+                }
+                selected_pillar_label = st.selectbox(
+                    "Select Micro Pillar to Validate:", list(target_options.keys())
                 )
+                target_col, target_df = target_options[selected_pillar_label]
 
-            colA, colB = st.columns(2)
-            with colA:
-                st.markdown("#### 1. Cash Conversion Cycle")
-                st.dataframe(df_ccc, use_container_width=True, hide_index=True)
-                st.markdown("#### 2. Quality of Earnings (CFO / PAT)")
-                st.dataframe(df_cfo_pat, use_container_width=True, hide_index=True)
-                st.markdown("#### 3. Operating Margin")
-                st.dataframe(df_margin, use_container_width=True, hide_index=True)
-                st.markdown("#### 4. Debt-to-Equity")
-                st.dataframe(df_leverage, use_container_width=True, hide_index=True)
-                st.markdown("#### 8. Gross Margin")
-                st.dataframe(df_gross, use_container_width=True, hide_index=True)
-            with colB:
-                st.markdown("#### 5. Return on Invested Capital")
-                st.dataframe(df_roic, use_container_width=True, hide_index=True)
-                st.markdown("#### 6. Live FCF Yield")
-                st.dataframe(df_fcf, use_container_width=True, hide_index=True)
-                st.markdown("#### 7. Degree of Operating Leverage")
-                st.dataframe(df_dol, use_container_width=True, hide_index=True)
-                st.markdown("#### 9. Interest Coverage")
-                st.dataframe(df_interest, use_container_width=True, hide_index=True)
-                st.markdown("#### 10. Asset Turnover")
-                st.dataframe(df_turnover, use_container_width=True, hide_index=True)
+                if not target_df.empty:
+                    # 3. Instantiate the Black Box Engine
+                    ols_engine = Phase2_OLS_Engine(macro_df, target_df)
+                    initial_payload = ols_engine.run_static_baseline(target_col)
+
+                    if "error" in initial_payload:
+                        st.warning(initial_payload["error"])
+                    else:
+                        tl = initial_payload["timeline_data"]
+
+                        # 4. Calculate Triage Recommendations
+                        n = len(tl["dates"])
+                        cooks_threshold = 4 / n if n > 0 else 0
+                        recommended_exclusions = [
+                            date
+                            for date, cook_d in zip(tl["dates"], tl["cooks_distance"])
+                            if cook_d > cooks_threshold
+                        ]
+
+                        # 5. The Control Room
+                        st.subheader("Forensic Execution Board")
+                        col_triage1, col_triage2 = st.columns([2, 1])
+
+                        with col_triage1:
+                            excluded_dates = st.multiselect(
+                                "Exclude Structural Outliers (High Leverage Dots automatically selected):",
+                                options=tl["dates"],
+                                default=recommended_exclusions,
+                                help="Removing these dates instantly recalculates the Alpha Moat and Beta sensitivities.",
+                            )
+
+                        # 6. Run Final Clean Baseline
+                        final_payload = ols_engine.run_static_baseline(
+                            target_col, excluded_dates=excluded_dates
+                        )
+                        clean_tl = final_payload["timeline_data"]
+
+                        with col_triage2:
+                            st.metric(
+                                "Bridge Strength (R-Squared)",
+                                f"{final_payload['r_squared']*100:.1f}%",
+                            )
+
+                        # 7. Rendering Addition 1: The 95% Confidence Bands
+                        st.markdown(
+                            "### 1. The Bridge: Actual vs. Predicted (95% Confidence Bands)"
+                        )
+                        chart_df = pd.DataFrame(
+                            {
+                                "ReportDate": clean_tl["dates"],
+                                "Actual Reported": clean_tl["actual_y"],
+                                "OLS Predicted (The Line)": clean_tl["predicted_y"],
+                                "Upper Tolerance Band": clean_tl["conf_upper"],
+                                "Lower Tolerance Band": clean_tl["conf_lower"],
+                            }
+                        ).set_index("ReportDate")
+                        st.line_chart(
+                            chart_df, color=["#FF4B4B", "#0068C9", "#808080", "#808080"]
+                        )
+
+                        # 8. Rendering Addition 2: The Residual / Rot Tracker
+                        st.markdown("### 2. Management Skill: The Residual Tracker")
+                        st.caption(
+                            "Continuous negative residuals indicate internal 'Rot' regardless of macro weather."
+                        )
+                        residual_df = pd.DataFrame(
+                            {
+                                "ReportDate": clean_tl["dates"],
+                                "Residual (Actual - Predicted)": clean_tl["residuals"],
+                            }
+                        ).set_index("ReportDate")
+                        st.bar_chart(residual_df, color="#FF8C00")
+
+                        # 9. DNA Output
+                        with st.expander("View Mathematical DNA (Alpha Moat & Betas)"):
+                            st.markdown(
+                                f"**Alpha (Structural Moat):** `{final_payload['alpha_moat']}`"
+                            )
+                            st.write("**Beta Sensitivities:**")
+                            st.json(final_payload["betas"])
+                            st.write("**P-Values (Statistical Significance):**")
+                            st.json(final_payload["p_values"])
+            else:
+                st.info(
+                    "Macro Data is missing. Please run the ETL Control Center Macro Spigot first."
+                )
 
 elif app_mode == "Market Overview":
     st.title("Market Overview")
