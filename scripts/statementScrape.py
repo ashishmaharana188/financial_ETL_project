@@ -1501,10 +1501,7 @@ indirect_cf_buckets = [
 
 
 def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
-    """
-    Executes the ETL pipeline for the provided list of tickers and
-    returns a summary matrix of the forensic validation results.
-    """
+
     failed_tickers = []
     batch_summary = []
 
@@ -1514,7 +1511,8 @@ def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
 
     print("\n[PHASE 1] Synchronizing SEC EDGAR Corporate Actions...")
     try:
-        backfill_structural_breaks()
+
+        backfill_structural_breaks(target_tickers)
         print("[PHASE 1] Synchronization Complete.\n")
     except Exception as e:
         print(f"[PHASE 1] WARNING: EDGAR sync failed ({e}). Proceeding with ETL...\n")

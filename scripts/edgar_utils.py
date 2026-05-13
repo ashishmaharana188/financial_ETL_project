@@ -36,13 +36,16 @@ def get_structural_break_date(ticker: str):
     return None
 
 
-def backfill_structural_breaks():
+def backfill_structural_breaks(target_tickers=None):
     print("Starting Corporate Action Audit...")
 
     with engine.begin() as conn:
-        # 1. Fetch all tickers from your profiles table
-        result = conn.execute(text('SELECT "Ticker" FROM company_profiles;'))
-        tickers = [row[0] for row in result]
+        # 1. Use passed tickers if available, otherwise fetch all
+        if target_tickers:
+            tickers = target_tickers
+        else:
+            result = conn.execute(text('SELECT "Ticker" FROM company_profiles;'))
+            tickers = [row[0] for row in result]
 
         for ticker in tickers:
             print(f"[{ticker}] Checking EDGAR for structural breaks...")
@@ -64,11 +67,7 @@ def backfill_structural_breaks():
             else:
                 print(f"  -> Clean history. No action required.")
 
-            # Respect SEC rate limits (10 requests per second max, safe to pause for 1s)
+            # Respect SEC rate limits
             time.sleep(1)
 
     print("Audit Complete.")
-
-
-if __name__ == "__main__":
-    backfill_structural_breaks()
