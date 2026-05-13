@@ -254,6 +254,27 @@ elif app_mode == "Single Company Deep Dive":
             available_db_tickers,
             key="single_db_ticker_selectbox",
         )
+        try:
+            with engine.connect() as conn:
+                break_date_res = conn.execute(
+                    text(
+                        'SELECT valid_data_since FROM company_profiles WHERE "Ticker" = :ticker'
+                    ),
+                    {"ticker": selected_db_ticker},
+                ).fetchone()
+                edgar_break_date = break_date_res[0] if break_date_res else None
+        except Exception:
+            edgar_break_date = None
+
+        st.markdown("### 🎛️ Swarm Memory Controls")
+        view_mode = st.radio(
+            "Select Historical Perspective:",
+            [
+                "Swarm Predictive (Strictly Post-Edgar)",
+                "Historical Audit (Merged Before & After)",
+            ],
+            horizontal=True,
+        )
 
         with st.spinner(
             f"Running Forensic Scan for {selected_db_ticker} using {selected_source.upper()} data..."
@@ -272,9 +293,36 @@ elif app_mode == "Single Company Deep Dive":
             df_cfo_pat = fetch_cfo_to_pat(selected_db_ticker, selected_source)
             df_turnover = fetch_asset_turnover(selected_db_ticker, selected_source)
 
+            if "Predictive" in view_mode and edgar_break_date:
+                cutoff = pd.to_datetime(edgar_break_date)
+
+                # Apply to Phase 1
+                df_roic = df_roic[pd.to_datetime(df_roic["ReportDate"]) > cutoff]
+                df_fcf = df_fcf[pd.to_datetime(df_fcf["ReportDate"]) > cutoff]
+                df_de = df_de[pd.to_datetime(df_de["ReportDate"]) > cutoff]
+                df_ccc = df_ccc[pd.to_datetime(df_ccc["ReportDate"]) > cutoff]
+                df_dol = df_dol[pd.to_datetime(df_dol["ReportDate"]) > cutoff]
+
+                # Apply to Phase 2
+                df_op_margin = df_op_margin[
+                    pd.to_datetime(df_op_margin["ReportDate"]) > cutoff
+                ]
+                df_gr_margin = df_gr_margin[
+                    pd.to_datetime(df_gr_margin["ReportDate"]) > cutoff
+                ]
+                df_int_cov = df_int_cov[
+                    pd.to_datetime(df_int_cov["ReportDate"]) > cutoff
+                ]
+                df_cfo_pat = df_cfo_pat[
+                    pd.to_datetime(df_cfo_pat["ReportDate"]) > cutoff
+                ]
+                df_turnover = df_turnover[
+                    pd.to_datetime(df_turnover["ReportDate"]) > cutoff
+                ]
+
             # --- TOP LEVEL: STRUCTURAL HEALTH (PHASE 1) ---
             st.divider()
-            st.subheader("Phase 1: Structural Anchors")
+            st.subheader("Structural Anchors")
             st.caption("Long-term capital efficiency and survival metrics.")
 
             yc1, yc2, yc3, yc4, yc5 = st.columns(5)
@@ -366,7 +414,7 @@ elif app_mode == "Single Company Deep Dive":
 
             # --- BOTTOM LEVEL: RAW DATA ROOM ---
             st.divider()
-            st.subheader("The Data Room")
+            st.subheader("Data Room")
 
             with st.expander("View Raw Structural Matrices (Phase 1)"):
                 if not df_roic.empty:
@@ -445,7 +493,7 @@ elif app_mode == "Single Company Deep Dive":
                     st.write("No tactical data computed.")
 
             st.divider()
-            st.header("Phase 2: OLS Macro Bridge & Forensic Triage")
+            st.header("OLS Macro Bridge & Forensic Triage")
 
             # 1. Fetch and format the live Macro Spigot data from DB
             try:
@@ -480,67 +528,206 @@ elif app_mode == "Single Company Deep Dive":
                 if not target_df.empty:
                     # 3. Instantiate the Black Box Engine
                     ols_engine = Phase2_OLS_Engine(macro_df, target_df)
+                    # 1. Fetch the Initial Baseline (Includes everything)
                     initial_payload = ols_engine.run_static_baseline(target_col)
 
                     if "error" in initial_payload:
-                        st.warning(initial_payload["error"])
+                        st.warning(
+                            f"Could not process {target_col}: {initial_payload['error']}"
+                        )
                     else:
-                        tl = initial_payload["timeline_data"]
+                        init_tl = initial_payload["timeline_data"]
 
-                        # 4. Calculate Triage Recommendations
-                        n = len(tl["dates"])
-                        cooks_threshold = 4 / n if n > 0 else 0
-                        recommended_exclusions = [
+                        # Identify exactly which dates triggered the Cook's alarm
+                        system_outliers = [
                             date
-                            for date, cook_d in zip(tl["dates"], tl["cooks_distance"])
-                            if cook_d > cooks_threshold
+                            for date, is_out in zip(
+                                init_tl["dates"], init_tl["is_outlier"]
+                            )
+                            if is_out
                         ]
 
-                        # 5. The Control Room
-                        st.subheader("Forensic Execution Board")
-                        col_triage1, col_triage2 = st.columns([2, 1])
+                        # --- NEW: OUTLIER CONTROL CENTER ---
+                        st.markdown("### Outlier Control Center")
 
-                        with col_triage1:
-                            excluded_dates = st.multiselect(
-                                "Exclude Structural Outliers (High Leverage Dots automatically selected):",
-                                options=tl["dates"],
-                                default=recommended_exclusions,
-                                help="Removing these dates instantly recalculates the Alpha Moat and Beta sensitivities.",
+                        if system_outliers:
+                            st.warning(
+                                f"⚠️ System detected {len(system_outliers)} mathematical anomalies: {', '.join(system_outliers)}"
                             )
+                        else:
+                            st.success("✅ No mathematical anomalies detected.")
 
-                        # 6. Run Final Clean Baseline
-                        final_payload = ols_engine.run_static_baseline(
-                            target_col, excluded_dates=excluded_dates
+                        # The 3-Way Interactive Toggle
+                        handling_mode = st.radio(
+                            "Select Outlier Handling Strategy:",
+                            [
+                                "Include All Data",
+                                "Exclude System-Detected Outliers",
+                                "Custom Manual Selection",
+                            ],
+                            horizontal=True,
+                            key=f"radio_outlier_{target_col}",
                         )
-                        clean_tl = final_payload["timeline_data"]
 
-                        with col_triage2:
-                            st.metric(
-                                "Bridge Strength (R-Squared)",
-                                f"{final_payload['r_squared']*100:.1f}%",
+                        # Logic to capture human selection
+                        final_exclusions = []
+                        if handling_mode == "Exclude System-Detected Outliers":
+                            final_exclusions = system_outliers
+                        elif handling_mode == "Custom Manual Selection":
+                            final_exclusions = st.multiselect(
+                                "Select specific quarters to drop from the model:",
+                                options=init_tl["dates"],
+                                default=system_outliers,  # Pre-fills with system suggestions for convenience
+                                key=f"multi_{target_col}",
                             )
 
-                        # 7. Rendering Addition 1: The 95% Confidence Bands
+                        # 2. Recalculate the Math based on Human Input
+                        if final_exclusions:
+                            clean_payload = ols_engine.run_static_baseline(
+                                target_col, excluded_dates=final_exclusions
+                            )
+                            if "error" in clean_payload:
+                                clean_payload = initial_payload  # Fallback if dropping broke the model
+                        else:
+                            clean_payload = initial_payload
+
+                        clean_tl = clean_payload["timeline_data"]
+                        final_payload = clean_payload
+
+                        # --- RESTORED R-SQUARED METRIC ---
+                        st.metric(
+                            "Bridge Strength (R-Squared)",
+                            f"{final_payload['r_squared']*100:.1f}%",
+                            help="Measures how much of the company's variance is mathematically explained by the 8 Macro Beams.",
+                        )
+                        st.divider()
                         st.markdown(
-                            "### 1. The Bridge: Actual vs. Predicted (95% Confidence Bands)"
-                        )
-                        chart_df = pd.DataFrame(
-                            {
-                                "ReportDate": clean_tl["dates"],
-                                "Actual Reported": clean_tl["actual_y"],
-                                "OLS Predicted (The Line)": clean_tl["predicted_y"],
-                                "Upper Tolerance Band": clean_tl["conf_upper"],
-                                "Lower Tolerance Band": clean_tl["conf_lower"],
-                            }
-                        ).set_index("ReportDate")
-                        st.line_chart(
-                            chart_df, color=["#FF4B4B", "#0068C9", "#808080", "#808080"]
+                            f"### The Bridge: {target_col} Actual vs. Predicted"
                         )
 
-                        st.markdown("### 2. Management Skill: The Residual Tracker")
-                        st.caption(
-                            "Green bars indicate 'Alpha' (Beating the macro odds). Red bars indicate 'Rot' (Underperforming the macro environment)."
+                        fig_line = go.Figure()
+
+                        # 1. Tolerance Bands
+                        fig_line.add_trace(
+                            go.Scatter(
+                                x=clean_tl["dates"] + clean_tl["dates"][::-1],
+                                y=clean_tl["conf_upper"] + clean_tl["conf_lower"][::-1],
+                                fill="toself",
+                                fillcolor="rgba(128,128,128,0.2)",
+                                line=dict(color="rgba(255,255,255,0)"),
+                                name="95% Tolerance",
+                                hoverinfo="skip",
+                            )
                         )
+
+                        # 2. Split Actuals into "Normal" and "Detected Outliers" for coloring
+                        # We map this against the INITIAL payload so dropped dots still appear on screen (as ghost/outlier dots)
+                        normal_x, normal_y = [], []
+                        outlier_x, outlier_y = [], []
+
+                        for i in range(len(init_tl["dates"])):
+                            if (
+                                init_tl["is_outlier"][i]
+                                or init_tl["dates"][i] in final_exclusions
+                            ):
+                                outlier_x.append(init_tl["dates"][i])
+                                outlier_y.append(init_tl["actual_y"][i])
+                            else:
+                                normal_x.append(init_tl["dates"][i])
+                                normal_y.append(init_tl["actual_y"][i])
+
+                        # Plot Normal Data (Red Dots)
+                        fig_line.add_trace(
+                            go.Scatter(
+                                x=normal_x,
+                                y=normal_y,
+                                mode="markers",
+                                name="Normal Quarter",
+                                marker=dict(color="#FF4B4B", size=8),
+                            )
+                        )
+
+                        # Plot Anomalies (Large Yellow Dots)
+                        fig_line.add_trace(
+                            go.Scatter(
+                                x=outlier_x,
+                                y=outlier_y,
+                                mode="markers",
+                                name="Flagged Outlier",
+                                marker=dict(
+                                    color="#FFC107",
+                                    size=12,
+                                    line=dict(color="red", width=2),
+                                ),
+                                hovertemplate="<b>%{x}</b><br>Outlier Value: %{y}<extra></extra>",
+                            )
+                        )
+
+                        # 3. Add OLS Predicted Line (Uses Cleaned Data)
+                        fig_line.add_trace(
+                            go.Scatter(
+                                x=clean_tl["dates"],
+                                y=clean_tl["predicted_y"],
+                                mode="lines",
+                                name="OLS Predicted",
+                                line=dict(color="#0068C9", dash="dash", width=2),
+                                connectgaps=True,
+                            )
+                        )
+
+                        try:
+                            if "Audit" in view_mode and edgar_break_date:
+                                break_dt = str(edgar_break_date)
+                                fig_line.add_vline(
+                                    x=break_dt, line_dash="dash", line_color="white"
+                                )
+                                fig_line.add_annotation(
+                                    x=break_dt,
+                                    y=1,
+                                    yref="paper",
+                                    text=" SEC Corporate Action",
+                                    showarrow=False,
+                                    xanchor="left",
+                                    yanchor="top",
+                                    font=dict(color="white", size=11),
+                                )
+                        except NameError:
+                            pass
+
+                        fig_line.update_layout(
+                            margin=dict(l=0, r=0, t=30, b=0),
+                            plot_bgcolor="rgba(0,0,0,0)",
+                            paper_bgcolor="rgba(0,0,0,0)",
+                        )
+                        st.plotly_chart(
+                            fig_line,
+                            use_container_width=True,
+                            key=f"chart_{target_col}",
+                        )
+
+                        # --- NEW: ADD THE DATA TABLE VIEWER BACK ---
+                        with st.expander("📊 View Underlying Numerical Data"):
+                            chart_df = pd.DataFrame(
+                                {
+                                    "ReportDate": clean_tl["dates"],
+                                    "Actual Reported": [
+                                        round(val, 4) for val in clean_tl["actual_y"]
+                                    ],
+                                    "OLS Predicted": [
+                                        round(val, 4) for val in clean_tl["predicted_y"]
+                                    ],
+                                    "Upper Tolerance Band": [
+                                        round(val, 4) for val in clean_tl["conf_upper"]
+                                    ],
+                                    "Lower Tolerance Band": [
+                                        round(val, 4) for val in clean_tl["conf_lower"]
+                                    ],
+                                }
+                            ).set_index("ReportDate")
+
+                            st.dataframe(chart_df, use_container_width=True)
+                        # -------------------------------------------
+                        st.markdown("#### Residual Tracker")
 
                         # Determine colors: Green if positive, Red if negative
                         bar_colors = [

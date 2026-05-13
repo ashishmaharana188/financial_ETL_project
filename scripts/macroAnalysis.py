@@ -54,21 +54,38 @@ class Phase2_OLS_Engine:
 
         # 2. Isolate the target Micro Metric (Y) and sync the timeline
         if target_column not in self.micro_df.columns:
-            raise ValueError(
-                f"Target column '{target_column}' not found in micro data."
-            )
+            return {
+                "error": f"Target column '{target_column}' not found in micro data."
+            }
 
         Y_raw = self.micro_df[target_column].dropna()
 
         # Align X and Y on exact overlapping dates
         aligned_dates = X_processed.index.intersection(Y_raw.index)
-        if len(aligned_dates) == 0:
-            return {
-                "error": "No overlapping dates found between Macro and Micro data after applying lags."
-            }
 
-        X_aligned = X_processed.loc[aligned_dates]
-        Y_aligned = Y_raw.loc[aligned_dates]
+        # --- NEW: DYNAMIC K vs N TRIAGE ---
+        N = len(aligned_dates)
+        if N < 3:
+            return {"error": f"Insufficient data (N={N}). Minimum 3 quarters required."}
+
+        # Build a simple time index for fresh spin-offs (Trendline Fallback)
+        X_processed["time_index"] = range(1, len(X_processed) + 1)
+
+        if N < 12:
+            # TIER 1 (Spin-off): Only run a Time-Series trend
+            valid_cols = ["time_index"]
+        elif N < 24:
+            # TIER 2 (Maturing): Light Macro
+            valid_cols = ["US_10Y_Yield_6M", "USD_INR", "Brent_Crude"]
+        else:
+            # TIER 3 (Matured): Full 8-Variable Matrix
+            valid_cols = [c for c in X_processed.columns if c != "time_index"]
+
+        # Isolate exactly the columns we need, dropping NaNs
+        valid_cols = [c for c in valid_cols if c in X_processed.columns]
+        X_aligned = X_processed.loc[aligned_dates, valid_cols].dropna()
+        Y_aligned = Y_raw.loc[X_aligned.index]
+        # ----------------------------------
 
         # 3. Apply UI Triage (The Outlier Exclusions)
         if excluded_dates:
@@ -84,11 +101,18 @@ class Phase2_OLS_Engine:
         model = sm.OLS(Y_clean, X_with_const).fit()
 
         # 5. The Diagnostic Sweep (Cook's D, Residuals, Confidence Bands)
+        # 5. The Diagnostic Sweep (Cook's D, Residuals, Confidence Bands)
         predictions = model.get_prediction(X_with_const)
         summary_frame = predictions.summary_frame(alpha=0.05)  # 95% Confidence Level
 
         influence = OLSInfluence(model)
         cooks_d = influence.cooks_distance[0]
+
+        # --- NEW: CALCULATE OUTLIER BOOLEANS (4/N Threshold) ---
+        N_clean = len(Y_clean)
+        cooks_threshold = 4 / N_clean if N_clean > 0 else 0
+        is_outlier = [bool(cd > cooks_threshold) for cd in cooks_d]
+        # -------------------------------------------------------
 
         residuals = Y_clean - model.fittedvalues
 
@@ -101,7 +125,6 @@ class Phase2_OLS_Engine:
             ),
             "betas": model.params.drop("const", errors="ignore").round(4).to_dict(),
             "p_values": model.pvalues.round(4).to_dict(),
-            # Time-series plotting arrays for the UI charts
             "timeline_data": {
                 "dates": Y_clean.index.strftime("%Y-%m-%d").tolist(),
                 "actual_y": Y_clean.tolist(),
@@ -110,6 +133,7 @@ class Phase2_OLS_Engine:
                 "conf_lower": summary_frame["obs_ci_lower"].tolist(),
                 "conf_upper": summary_frame["obs_ci_upper"].tolist(),
                 "cooks_distance": list(cooks_d),
+                "is_outlier": is_outlier,  # <--- Passes the True/False list to UI
             },
         }
 
