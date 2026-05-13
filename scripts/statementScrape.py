@@ -120,7 +120,7 @@ def get_yfinance(ticker, statement_type, freq, cache_dir=CACHE_DIR):
 
     print(f"Fetching {ticker} {statement_type} from Yfinance")
 
-    # NEW: Create a local ticker instance so it changes with every loop iteration
+    # Create a local ticker instance so it changes with every loop iteration
     yf_ticker = yf.Ticker(ticker)
 
     # call yfinance using the local yf_ticker instead of global tickerName

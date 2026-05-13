@@ -51,7 +51,7 @@ def fetch_hybrid_macro_data(period_days=1000):
             df_in10y.index = pd.to_datetime(df_in10y.index).normalize()
             raw_data_frames.append(df_in10y)
 
-        # 2. NEW: Fetch India CPI (Beam 8: Inflation)
+        # 2. Fetch India CPI (Beam 8: Inflation)
         tv_data_cpi = tv.get_hist(
             symbol="INCPI",
             exchange="ECONOMICS",

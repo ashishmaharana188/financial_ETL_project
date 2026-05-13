@@ -37,7 +37,7 @@ app_mode = st.sidebar.radio(
 )
 
 st.sidebar.divider()
-st.sidebar.markdown("### ⚙️ Engine Settings")
+st.sidebar.markdown("### Engine Settings")
 selected_source = st.sidebar.selectbox(
     "Primary Data Source",
     options=["vantage", "yfinance", "screener"],
@@ -93,7 +93,7 @@ if app_mode == "ETL Control Center":
             key="etl_ai_mode_radio",
         )
 
-    # NEW: Data Spigot Selector
+    # Data Spigot Selector
     st.caption("Data Spigot Configuration")
     selected_spigot = st.radio(
         "Select Primary Data Source (Auto-Rotate highly recommended to bypass API limits):",
@@ -139,7 +139,7 @@ if app_mode == "ETL Control Center":
                 f"Executing pipeline via {selected_spigot} for {len(target_tickers)} client(s)..."
             ):
                 try:
-                    # NEW: Passing the requested_source into the ETL engine
+                    #  Passing the requested_source into the ETL engine
                     st.session_state.pipeline_results = run_etl_pipeline(
                         target_tickers=target_tickers,
                         ai_mode=mode_param,
@@ -232,7 +232,7 @@ if app_mode == "ETL Control Center":
                         f"Final DB-Formatted Data ({selected_ticker} - {stmt_key})"
                     )
                     st.dataframe(clean_df, use_container_width=True)
-###############################################
+
 elif app_mode == "Single Company Deep Dive":
     st.title("Single Company Deep Dive")
 
@@ -258,15 +258,29 @@ elif app_mode == "Single Company Deep Dive":
             with engine.connect() as conn:
                 break_date_res = conn.execute(
                     text(
-                        'SELECT valid_data_since FROM company_profiles WHERE "Ticker" = :ticker'
+                        'SELECT valid_data_since, "Sector", "Industry" FROM company_profiles WHERE "Ticker" = :ticker'
                     ),
                     {"ticker": selected_db_ticker},
                 ).fetchone()
+
                 edgar_break_date = break_date_res[0] if break_date_res else None
+                company_sector = (
+                    break_date_res[1]
+                    if break_date_res and len(break_date_res) > 1
+                    else "DEFAULT"
+                )
+                # Fetch the highly specific industry
+                company_industry = (
+                    break_date_res[2]
+                    if break_date_res and len(break_date_res) > 2
+                    else "DEFAULT"
+                )
         except Exception:
             edgar_break_date = None
+            company_sector = "DEFAULT"
+            company_industry = "DEFAULT"
 
-        st.markdown("### 🎛️ Swarm Memory Controls")
+        st.markdown("### Swarm Memory Controls")
         view_mode = st.radio(
             "Select Historical Perspective:",
             [
@@ -525,264 +539,366 @@ elif app_mode == "Single Company Deep Dive":
                 )
                 target_col, target_df = target_options[selected_pillar_label]
 
-                if not target_df.empty:
-                    # 3. Instantiate the Black Box Engine
-                    ols_engine = Phase2_OLS_Engine(macro_df, target_df)
-                    # 1. Fetch the Initial Baseline (Includes everything)
-                    initial_payload = ols_engine.run_static_baseline(target_col)
+            if not target_df.empty:
+                # 3. Instantiate the Black Box Engine
+                ols_engine = Phase2_OLS_Engine(macro_df, target_df)
 
-                    if "error" in initial_payload:
-                        st.warning(
-                            f"Could not process {target_col}: {initial_payload['error']}"
+                # 1. Fetch the Initial Baseline (Pass the Sector for Smart Defaults)
+                initial_payload = ols_engine.run_static_baseline(
+                    target_col, sector=company_sector, industry=company_industry
+                )
+
+                if "error" in initial_payload:
+                    st.warning(
+                        f"Could not process {target_col}: {initial_payload['error']}"
+                    )
+                else:
+                    init_tl = initial_payload["timeline_data"]
+
+                    # --- UI NOTIFICATION & MACRO SANDBOX ---
+                    n_quarters = len(init_tl["dates"])
+                    custom_macro_selection = None
+
+                    if 12 <= n_quarters < 24:
+                        active_beams = list(initial_payload["betas"].keys())
+                        st.info(
+                            f"💡 Limited Data Detected (N={n_quarters}). Engine auto-loaded the **{company_sector}** macro template: `{active_beams}`"
                         )
-                    else:
-                        init_tl = initial_payload["timeline_data"]
 
-                        # Identify exactly which dates triggered the Cook's alarm
-                        system_outliers = [
-                            date
-                            for date, is_out in zip(
-                                init_tl["dates"], init_tl["is_outlier"]
-                            )
-                            if is_out
+                        # The full list of 8 beams the user can choose from
+                        all_beams = [
+                            "Brent_Crude",
+                            "USD_INR",
+                            "Broad_Commodity",
+                            "US_Dollar_Index_3M",
+                            "India_CPI_3M",
+                            "India_10Y_Yield_6M",
+                            "US_10Y_Yield_6M",
+                            "Yield_Spread_6M",
                         ]
 
-                        # --- NEW: OUTLIER CONTROL CENTER ---
-                        st.markdown("### Outlier Control Center")
+                        default_beams = [b for b in active_beams if b in all_beams]
 
-                        if system_outliers:
-                            st.warning(
-                                f"⚠️ System detected {len(system_outliers)} mathematical anomalies: {', '.join(system_outliers)}"
-                            )
-                        else:
-                            st.success("✅ No mathematical anomalies detected.")
-
-                        # The 3-Way Interactive Toggle
-                        handling_mode = st.radio(
-                            "Select Outlier Handling Strategy:",
-                            [
-                                "Include All Data",
-                                "Exclude System-Detected Outliers",
-                                "Custom Manual Selection",
-                            ],
-                            horizontal=True,
-                            key=f"radio_outlier_{target_col}",
+                        # The Interactive Multiselect
+                        custom_macro_selection = st.multiselect(
+                            "Override Macro Template (Select exactly 3):",
+                            options=all_beams,
+                            default=default_beams,
+                            max_selections=3,
+                            key=f"macro_override_{target_col}",
                         )
 
-                        # Logic to capture human selection
-                        final_exclusions = []
-                        if handling_mode == "Exclude System-Detected Outliers":
-                            final_exclusions = system_outliers
-                        elif handling_mode == "Custom Manual Selection":
-                            final_exclusions = st.multiselect(
-                                "Select specific quarters to drop from the model:",
-                                options=init_tl["dates"],
-                                default=system_outliers,  # Pre-fills with system suggestions for convenience
-                                key=f"multi_{target_col}",
-                            )
+                        # If the user manually changes the beams, instantly recalculate the baseline!
+                    if (
+                        custom_macro_selection is not None
+                        and len(custom_macro_selection) == 3
+                        and set(custom_macro_selection) != set(default_beams)
+                    ):
+                        init_tl = initial_payload["timeline_data"]
+                    # -----------------------------------------------
 
-                        # 2. Recalculate the Math based on Human Input
-                        if final_exclusions:
-                            clean_payload = ols_engine.run_static_baseline(
-                                target_col, excluded_dates=final_exclusions
-                            )
-                            if "error" in clean_payload:
-                                clean_payload = initial_payload  # Fallback if dropping broke the model
-                        else:
+                    # Identify exactly which dates triggered the Cook's alarm
+                    system_outliers = [
+                        date
+                        for date, is_out in zip(init_tl["dates"], init_tl["is_outlier"])
+                        if is_out
+                    ]
+
+                    # --- OUTLIER CONTROL CENTER ---
+                    st.markdown("### Outlier Control Center")
+
+                    if system_outliers:
+                        st.warning(
+                            f"System detected {len(system_outliers)} mathematical anomalies: {', '.join(system_outliers)}"
+                        )
+                    else:
+                        st.success(" No mathematical anomalies detected.")
+
+                    # The 3-Way Interactive Toggle
+                    handling_mode = st.radio(
+                        "Select Outlier Handling Strategy:",
+                        [
+                            "Include All Data",
+                            "Exclude System-Detected Outliers",
+                            "Custom Manual Selection",
+                        ],
+                        horizontal=True,
+                        key=f"radio_outlier_{target_col}",
+                    )
+
+                    # Logic to capture human selection
+                    final_exclusions = []
+                    if handling_mode == "Exclude System-Detected Outliers":
+                        final_exclusions = system_outliers
+                    elif handling_mode == "Custom Manual Selection":
+                        final_exclusions = st.multiselect(
+                            "Select specific quarters to drop from the model:",
+                            options=init_tl["dates"],
+                            default=system_outliers,
+                            key=f"multi_{target_col}",
+                        )
+
+                        # 2. Recalculate the Math based on Human Input (Passing custom beams if active)
+                    if final_exclusions:
+                        clean_payload = ols_engine.run_static_baseline(
+                            target_col,
+                            sector=company_sector,
+                            industry=company_industry,
+                            excluded_dates=final_exclusions,
+                            custom_beams=custom_macro_selection,
+                        )
+                        if "error" in clean_payload:
                             clean_payload = initial_payload
+                    else:
+                        clean_payload = initial_payload
 
-                        clean_tl = clean_payload["timeline_data"]
-                        final_payload = clean_payload
+                    clean_tl = clean_payload["timeline_data"]
+                    final_payload = clean_payload
 
-                        # --- RESTORED R-SQUARED METRIC ---
-                        st.metric(
-                            "Bridge Strength (R-Squared)",
-                            f"{final_payload['r_squared']*100:.1f}%",
-                            help="Measures how much of the company's variance is mathematically explained by the 8 Macro Beams.",
+                    # --- RESTORED R-SQUARED METRIC ---
+                    st.metric(
+                        "Bridge Strength (R-Squared)",
+                        f"{final_payload['r_squared']*100:.1f}%",
+                        help="Measures how much of the company's variance is mathematically explained by the 8 Macro Beams.",
+                    )
+                    st.divider()
+                    st.markdown(f"### The Bridge: {target_col} Actual vs. Predicted")
+
+                    fig_line = go.Figure()
+
+                    # 1. Tolerance Bands
+                    fig_line.add_trace(
+                        go.Scatter(
+                            x=clean_tl["dates"] + clean_tl["dates"][::-1],
+                            y=clean_tl["conf_upper"] + clean_tl["conf_lower"][::-1],
+                            fill="toself",
+                            fillcolor="rgba(128,128,128,0.2)",
+                            line=dict(color="rgba(255,255,255,0)"),
+                            name="95% Tolerance",
+                            hoverinfo="skip",
                         )
-                        st.divider()
-                        st.markdown(
-                            f"### The Bridge: {target_col} Actual vs. Predicted"
+                    )
+
+                    # 2. Split Actuals into "Normal" and "Detected Outliers" for coloring
+                    normal_x, normal_y = [], []
+                    outlier_x, outlier_y = [], []
+
+                    for i in range(len(init_tl["dates"])):
+                        if (
+                            init_tl["is_outlier"][i]
+                            or init_tl["dates"][i] in final_exclusions
+                        ):
+                            outlier_x.append(init_tl["dates"][i])
+                            outlier_y.append(init_tl["actual_y"][i])
+                        else:
+                            normal_x.append(init_tl["dates"][i])
+                            normal_y.append(init_tl["actual_y"][i])
+
+                    # --- RESTORED: THE ACTUAL LINE GRAPH ---
+                    fig_line.add_trace(
+                        go.Scatter(
+                            x=init_tl["dates"],
+                            y=init_tl["actual_y"],
+                            mode="lines",
+                            name="Actual Trendline",
+                            line=dict(color="#FF4B4B", width=2),
+                            hoverinfo="skip",
                         )
+                    )
+                    # ---------------------------------------
 
-                        fig_line = go.Figure()
+                    # Plot Normal Data (Red Dots)
+                    fig_line.add_trace(
+                        go.Scatter(
+                            x=normal_x,
+                            y=normal_y,
+                            mode="markers",
+                            name="Normal Quarter",
+                            marker=dict(color="#FF4B4B", size=8),
+                        )
+                    )
 
-                        # 1. Tolerance Bands
+                    # Plot Anomalies (Large Yellow Dots)
+                    fig_line.add_trace(
+                        go.Scatter(
+                            x=outlier_x,
+                            y=outlier_y,
+                            mode="markers",
+                            name="Flagged Outlier",
+                            marker=dict(
+                                color="#FFC107",
+                                size=12,
+                                line=dict(color="red", width=2),
+                            ),
+                            hovertemplate="<b>%{x}</b><br>Outlier Value: %{y}<extra></extra>",
+                        )
+                    )
+
+                    # 3. Add OLS Predicted Line (Uses Cleaned Data)
+                    fig_line.add_trace(
+                        go.Scatter(
+                            x=clean_tl["dates"],
+                            y=clean_tl["predicted_y"],
+                            mode="lines",
+                            name="OLS Predicted",
+                            line=dict(color="#0068C9", dash="dash", width=2),
+                            connectgaps=True,
+                        )
+                    )
+
+                    # --- NEW: STEP 4 THE PHANTOM DOT ---
+                    if "phantom_dot" in final_payload and final_payload["phantom_dot"]:
+                        phantom = final_payload["phantom_dot"]
+
+                        # Connect the last OLS point to the Phantom Dot with a forward-looking dotted line
                         fig_line.add_trace(
                             go.Scatter(
-                                x=clean_tl["dates"] + clean_tl["dates"][::-1],
-                                y=clean_tl["conf_upper"] + clean_tl["conf_lower"][::-1],
-                                fill="toself",
-                                fillcolor="rgba(128,128,128,0.2)",
-                                line=dict(color="rgba(255,255,255,0)"),
-                                name="95% Tolerance",
+                                x=[clean_tl["dates"][-1], phantom["target_date"]],
+                                y=[
+                                    clean_tl["predicted_y"][-1],
+                                    phantom["predicted_value"],
+                                ],
+                                mode="lines",
+                                name="Forward Trajectory",
+                                line=dict(color="#00FFAA", dash="dot", width=2),
+                                showlegend=False,
                                 hoverinfo="skip",
                             )
                         )
 
-                        # 2. Split Actuals into "Normal" and "Detected Outliers" for coloring
-                        # We map this against the INITIAL payload so dropped dots still appear on screen (as ghost/outlier dots)
-                        normal_x, normal_y = [], []
-                        outlier_x, outlier_y = [], []
-
-                        for i in range(len(init_tl["dates"])):
-                            if (
-                                init_tl["is_outlier"][i]
-                                or init_tl["dates"][i] in final_exclusions
-                            ):
-                                outlier_x.append(init_tl["dates"][i])
-                                outlier_y.append(init_tl["actual_y"][i])
-                            else:
-                                normal_x.append(init_tl["dates"][i])
-                                normal_y.append(init_tl["actual_y"][i])
-
-                        # Plot Normal Data (Red Dots)
+                        # Draw the Ghost Dot
                         fig_line.add_trace(
                             go.Scatter(
-                                x=normal_x,
-                                y=normal_y,
+                                x=[phantom["target_date"]],
+                                y=[phantom["predicted_value"]],
                                 mode="markers",
-                                name="Normal Quarter",
-                                marker=dict(color="#FF4B4B", size=8),
-                            )
-                        )
-
-                        # Plot Anomalies (Large Yellow Dots)
-                        fig_line.add_trace(
-                            go.Scatter(
-                                x=outlier_x,
-                                y=outlier_y,
-                                mode="markers",
-                                name="Flagged Outlier",
+                                name="Phantom Predictor (Next Qtr)",
                                 marker=dict(
-                                    color="#FFC107",
-                                    size=12,
-                                    line=dict(color="red", width=2),
-                                ),
-                                hovertemplate="<b>%{x}</b><br>Outlier Value: %{y}<extra></extra>",
-                            )
-                        )
-
-                        # 3. Add OLS Predicted Line (Uses Cleaned Data)
-                        fig_line.add_trace(
-                            go.Scatter(
-                                x=clean_tl["dates"],
-                                y=clean_tl["predicted_y"],
-                                mode="lines",
-                                name="OLS Predicted",
-                                line=dict(color="#0068C9", dash="dash", width=2),
-                                connectgaps=True,
-                            )
-                        )
-
-                        try:
-                            if "Audit" in view_mode and edgar_break_date:
-                                break_dt = str(edgar_break_date)
-                                fig_line.add_vline(
-                                    x=break_dt, line_dash="dash", line_color="white"
-                                )
-                                fig_line.add_annotation(
-                                    x=break_dt,
-                                    y=1,
-                                    yref="paper",
-                                    text=" SEC Corporate Action",
-                                    showarrow=False,
-                                    xanchor="left",
-                                    yanchor="top",
-                                    font=dict(color="white", size=11),
-                                )
-                        except NameError:
-                            pass
-
-                        fig_line.update_layout(
-                            margin=dict(l=0, r=0, t=30, b=0),
-                            plot_bgcolor="rgba(0,0,0,0)",
-                            paper_bgcolor="rgba(0,0,0,0)",
-                        )
-                        st.plotly_chart(
-                            fig_line,
-                            use_container_width=True,
-                            key=f"chart_{target_col}",
-                        )
-
-                        # --- NEW: ADD THE DATA TABLE VIEWER BACK ---
-                        with st.expander("📊 View Underlying Numerical Data"):
-                            chart_df = pd.DataFrame(
-                                {
-                                    "ReportDate": clean_tl["dates"],
-                                    "Actual Reported": [
-                                        round(val, 4) for val in clean_tl["actual_y"]
-                                    ],
-                                    "OLS Predicted": [
-                                        round(val, 4) for val in clean_tl["predicted_y"]
-                                    ],
-                                    "Upper Tolerance Band": [
-                                        round(val, 4) for val in clean_tl["conf_upper"]
-                                    ],
-                                    "Lower Tolerance Band": [
-                                        round(val, 4) for val in clean_tl["conf_lower"]
-                                    ],
-                                }
-                            ).set_index("ReportDate")
-
-                            st.dataframe(chart_df, use_container_width=True)
-                        # -------------------------------------------
-                        st.markdown("#### Residual Tracker")
-
-                        # Determine colors: Green if positive, Red if negative
-                        bar_colors = [
-                            "#00C851" if val > 0 else "#FF4444"
-                            for val in clean_tl["residuals"]
-                        ]
-
-                        fig = go.Figure(
-                            data=[
-                                go.Bar(
-                                    x=clean_tl["dates"],
-                                    y=clean_tl["residuals"],
-                                    marker_color=bar_colors,
-                                    width=0.4,
-                                )
-                            ]
-                        )
-
-                        fig.update_layout(
-                            margin=dict(l=0, r=0, t=20, b=0),
-                            yaxis_title="Margin Beat/Miss",
-                            plot_bgcolor="rgba(0,0,0,0)",
-                            paper_bgcolor="rgba(0,0,0,0)",
-                            # Draw a hard, bright zero-line so the user can easily see above/below
-                            shapes=[
-                                dict(
-                                    type="line",
-                                    xref="paper",
-                                    x0=0,
-                                    x1=1,
-                                    y0=0,
-                                    y1=0,
+                                    color="rgba(0,0,0,0)",  # Transparent fill (Ghost dot)
+                                    size=14,
                                     line=dict(
-                                        color="rgba(255, 255, 255, 0.5)", width=2
-                                    ),
-                                )
-                            ],
-                        )
-
-                        st.plotly_chart(fig, use_container_width=True)
-
-                        # 9. DNA Output
-                        with st.expander("View Mathematical DNA (Alpha Moat & Betas)"):
-                            st.markdown(
-                                f"**Alpha (Structural Moat):** `{final_payload['alpha_moat']}`"
+                                        color="#00FFAA", width=3
+                                    ),  # Bright neon border
+                                ),
+                                hovertemplate="<b>Projected: %{x}</b><br>Value: %{y}<extra></extra>",
                             )
-                            st.write("**Beta Sensitivities:**")
-                            st.json(final_payload["betas"])
-                            st.write("**P-Values (Statistical Significance):**")
-                            st.json(final_payload["p_values"])
+                        )
+                    # -----------------------------------
+
+                    try:
+                        if "Audit" in view_mode and edgar_break_date:
+                            break_dt = str(edgar_break_date)
+                            fig_line.add_vline(
+                                x=break_dt, line_dash="dash", line_color="white"
+                            )
+                            fig_line.add_annotation(
+                                x=break_dt,
+                                y=1,
+                                yref="paper",
+                                text=" SEC Corporate Action",
+                                showarrow=False,
+                                xanchor="left",
+                                yanchor="top",
+                                font=dict(color="white", size=11),
+                            )
+                    except NameError:
+                        pass
+
+                    fig_line.update_layout(
+                        margin=dict(l=0, r=0, t=30, b=0),
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                    )
+                    st.plotly_chart(
+                        fig_line,
+                        use_container_width=True,
+                        key=f"chart_{target_col}",
+                    )
+
+                    # --- NEW: PHANTOM PREDICTOR UI CALLOUT ---
+                    if "phantom_dot" in final_payload and final_payload["phantom_dot"]:
+                        phantom = final_payload["phantom_dot"]
+                        st.success(
+                            f"🔮 **Phantom Predictor:** Based on live trailing 90-day macro data, the engine projects the target metric to hit **{phantom['predicted_value']:.4f}** for the upcoming unreleased quarter ending **{phantom['target_date']}**."
+                        )
+                        # -----------------------------------------
+                        # -----------------------------------------
+                    # ---  ADD THE DATA TABLE VIEWER BACK ---
+                    with st.expander("📊 View Underlying Numerical Data"):
+                        chart_df = pd.DataFrame(
+                            {
+                                "ReportDate": clean_tl["dates"],
+                                "Actual Reported": [
+                                    round(val, 4) for val in clean_tl["actual_y"]
+                                ],
+                                "OLS Predicted": [
+                                    round(val, 4) for val in clean_tl["predicted_y"]
+                                ],
+                                "Upper Tolerance Band": [
+                                    round(val, 4) for val in clean_tl["conf_upper"]
+                                ],
+                                "Lower Tolerance Band": [
+                                    round(val, 4) for val in clean_tl["conf_lower"]
+                                ],
+                            }
+                        ).set_index("ReportDate")
+
+                        st.dataframe(chart_df, use_container_width=True)
+                    # -------------------------------------------
+                    st.markdown("#### Residual Tracker")
+
+                    # Determine colors: Green if positive, Red if negative
+                    bar_colors = [
+                        "#00C851" if val > 0 else "#FF4444"
+                        for val in clean_tl["residuals"]
+                    ]
+
+                    fig = go.Figure(
+                        data=[
+                            go.Bar(
+                                x=clean_tl["dates"],
+                                y=clean_tl["residuals"],
+                                marker_color=bar_colors,
+                                width=0.4,
+                            )
+                        ]
+                    )
+
+                    fig.update_layout(
+                        margin=dict(l=0, r=0, t=20, b=0),
+                        yaxis_title="Margin Beat/Miss",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        # Draw a hard, bright zero-line so the user can easily see above/below
+                        shapes=[
+                            dict(
+                                type="line",
+                                xref="paper",
+                                x0=0,
+                                x1=1,
+                                y0=0,
+                                y1=0,
+                                line=dict(color="rgba(255, 255, 255, 0.5)", width=2),
+                            )
+                        ],
+                    )
+
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    # 9. DNA Output
+                    with st.expander("View Mathematical DNA (Alpha Moat & Betas)"):
+                        st.markdown(
+                            f"**Alpha (Structural Moat):** `{final_payload['alpha_moat']}`"
+                        )
+                        st.write("**Beta Sensitivities:**")
+                        st.json(final_payload["betas"])
+                        st.write("**P-Values (Statistical Significance):**")
+                        st.json(final_payload["p_values"])
             else:
                 st.info(
                     "Macro Data is missing. Please run the ETL Control Center Macro Spigot first."
                 )
-############################################
+
 elif app_mode == "Market Overview":
     st.title("Market Overview")
     st.markdown("Cross-sectional ranking and quadrant analysis.")
