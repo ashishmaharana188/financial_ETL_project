@@ -16,6 +16,10 @@ def fetch_ccc(ticker: str, data_source: str) -> pd.DataFrame:
             FROM yearly_income_statement i
             JOIN yearly_balance_sheet b ON i."Ticker" = b."Ticker" AND i."ReportDate" = b."ReportDate" AND i."DataSource" = b."DataSource"
             WHERE i."Ticker" = :ticker AND i."DataSource" = :data_source
+              AND i."ReportDate" > COALESCE(
+                  (SELECT valid_data_since FROM company_profiles WHERE "Ticker" = :ticker), 
+                  '1900-01-01'
+              )
         )
         SELECT 
             "Ticker", "ReportDate",
@@ -50,6 +54,10 @@ def fetch_debt_to_equity(ticker: str, data_source: str) -> pd.DataFrame:
                  ELSE FALSE END AS swarm_pass_leverage
         FROM yearly_balance_sheet
         WHERE "Ticker" = :ticker AND "DataSource" = :data_source
+          AND "ReportDate" > COALESCE(
+              (SELECT valid_data_since FROM company_profiles WHERE "Ticker" = :ticker), 
+              '1900-01-01'
+          )
         ORDER BY "ReportDate" DESC;
     """)
     return pd.read_sql(
@@ -68,6 +76,10 @@ def fetch_roic(ticker: str, data_source: str) -> pd.DataFrame:
             FROM yearly_income_statement i
             JOIN yearly_balance_sheet b ON i."Ticker" = b."Ticker" AND i."ReportDate" = b."ReportDate" AND i."DataSource" = b."DataSource"
             WHERE i."Ticker" = :ticker AND i."DataSource" = :data_source
+              AND i."ReportDate" > COALESCE(
+                  (SELECT valid_data_since FROM company_profiles WHERE "Ticker" = :ticker), 
+                  '1900-01-01'
+              )
         )
         SELECT 
             "Ticker", "ReportDate",
@@ -95,6 +107,10 @@ def fetch_fcf_yield(ticker: str, data_source: str) -> pd.DataFrame:
             CASE WHEN ("TotalOperatingCashFlow" - ABS(COALESCE("CapExPurchaseOfPPE", 0))) > 0 THEN TRUE ELSE FALSE END AS swarm_pass_positive_fcf
         FROM yearly_indirect_cash_flow
         WHERE "Ticker" = :ticker AND "DataSource" = :data_source
+          AND "ReportDate" > COALESCE(
+              (SELECT valid_data_since FROM company_profiles WHERE "Ticker" = :ticker), 
+              '1900-01-01'
+          )
         ORDER BY "ReportDate" DESC;
     """)
     df = pd.read_sql(
@@ -163,6 +179,10 @@ def fetch_dol(ticker: str, data_source: str) -> pd.DataFrame:
                 LAG("OperatingIncome") OVER (PARTITION BY "Ticker" ORDER BY "ReportDate" ASC) AS prev_operating_income
             FROM yearly_income_statement
             WHERE "Ticker" = :ticker AND "DataSource" = :data_source
+              AND "ReportDate" > COALESCE(
+                  (SELECT valid_data_since FROM company_profiles WHERE "Ticker" = :ticker), 
+                  '1900-01-01'
+              )
         ),
         pct_changes AS (
             SELECT 
@@ -199,6 +219,10 @@ def fetch_cfo_to_pat(ticker: str, data_source: str) -> pd.DataFrame:
             JOIN yearly_indirect_cash_flow c 
             ON i."Ticker" = c."Ticker" AND i."ReportDate" = c."ReportDate" AND i."DataSource" = c."DataSource"
             WHERE i."Ticker" = :ticker AND i."DataSource" = :data_source
+              AND i."ReportDate" > COALESCE(
+                  (SELECT valid_data_since FROM company_profiles WHERE "Ticker" = :ticker), 
+                  '1900-01-01'
+              )
         )
         SELECT 
             "Ticker", "ReportDate",
@@ -230,6 +254,10 @@ def fetch_operating_margin(ticker: str, data_source: str) -> pd.DataFrame:
                  WHEN "OperatingIncome" > 0 THEN TRUE ELSE FALSE END AS swarm_pass_operating_margin
         FROM quarterly_income_statement
         WHERE "Ticker" = :ticker AND "DataSource" = :data_source
+          AND "ReportDate" > COALESCE(
+              (SELECT valid_data_since FROM company_profiles WHERE "Ticker" = :ticker), 
+              '1900-01-01'
+          )
         ORDER BY "ReportDate" DESC;
     """)
     return pd.read_sql(
@@ -247,6 +275,10 @@ def fetch_gross_margin(ticker: str, data_source: str) -> pd.DataFrame:
                  WHEN "GrossProfit" > 0 THEN TRUE ELSE FALSE END AS swarm_pass_gross_margin
         FROM quarterly_income_statement
         WHERE "Ticker" = :ticker AND "DataSource" = :data_source
+          AND "ReportDate" > COALESCE(
+              (SELECT valid_data_since FROM company_profiles WHERE "Ticker" = :ticker), 
+              '1900-01-01'
+          )
         ORDER BY "ReportDate" DESC;
     """)
     return pd.read_sql(
@@ -278,6 +310,10 @@ def fetch_interest_coverage(ticker: str, data_source: str) -> pd.DataFrame:
             
         FROM quarterly_income_statement
         WHERE "Ticker" = :ticker AND "DataSource" = :data_source
+          AND "ReportDate" > COALESCE(
+              (SELECT valid_data_since FROM company_profiles WHERE "Ticker" = :ticker), 
+              '1900-01-01'
+          )
         ORDER BY "ReportDate" DESC;
     """)
     return pd.read_sql(
@@ -296,6 +332,10 @@ def fetch_asset_turnover(ticker: str, data_source: str) -> pd.DataFrame:
             JOIN quarterly_balance_sheet b 
             ON i."Ticker" = b."Ticker" AND i."ReportDate" = b."ReportDate" AND i."DataSource" = b."DataSource"
             WHERE i."Ticker" = :ticker AND i."DataSource" = :data_source
+              AND i."ReportDate" > COALESCE(
+                  (SELECT valid_data_since FROM company_profiles WHERE "Ticker" = :ticker), 
+                  '1900-01-01'
+              )
         )
         SELECT 
             "Ticker", "ReportDate",

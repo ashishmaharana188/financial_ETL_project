@@ -26,6 +26,7 @@ company_profiles = Table(
     Column("CompanyName", String(200)),
     Column("Sector", String(100)),
     Column("Industry", String(100)),
+    Column("valid_data_since", Date),
 )
 
 macro_indicators = Table(

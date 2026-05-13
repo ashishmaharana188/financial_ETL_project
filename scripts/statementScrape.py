@@ -25,6 +25,7 @@ from scripts.vectorize import get_top_buckets
 from scripts.reasoning import analyze_key_with_phi3
 import streamlit as st
 from datetime import datetime
+from scripts.edgar_utils import backfill_structural_breaks
 
 runtime.load_models()
 
@@ -1510,6 +1511,13 @@ def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
     print("\n" + "=" * 40)
     print(f"STARTING BATCH PROCESSING (Mode: {ai_mode.upper()})")
     print("=" * 40)
+
+    print("\n[PHASE 1] Synchronizing SEC EDGAR Corporate Actions...")
+    try:
+        backfill_structural_breaks()
+        print("[PHASE 1] Synchronization Complete.\n")
+    except Exception as e:
+        print(f"[PHASE 1] WARNING: EDGAR sync failed ({e}). Proceeding with ETL...\n")
 
     try:
         # Boot the PyTorch/Ollama engine if running locally
