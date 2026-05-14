@@ -819,12 +819,11 @@ elif app_mode == "Single Company Deep Dive":
                     if "phantom_dot" in final_payload and final_payload["phantom_dot"]:
                         phantom = final_payload["phantom_dot"]
                         st.success(
-                            f"🔮 **Phantom Predictor:** Based on live trailing 90-day macro data, the engine projects the target metric to hit **{phantom['predicted_value']:.4f}** for the upcoming unreleased quarter ending **{phantom['target_date']}**."
+                            f"Based on live trailing 90-day macro data, the engine projects the target metric to hit **{phantom['predicted_value']:.4f}** for the upcoming unreleased quarter ending **{phantom['target_date']}**."
                         )
-                        # -----------------------------------------
-                        # -----------------------------------------
+
                     # ---  ADD THE DATA TABLE VIEWER BACK ---
-                    with st.expander("📊 View Underlying Numerical Data"):
+                    with st.expander("View Underlying Numerical Data"):
                         chart_df = pd.DataFrame(
                             {
                                 "ReportDate": clean_tl["dates"],

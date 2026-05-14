@@ -897,13 +897,25 @@ def apply_balance_sheet_fallbacks(df, target_columns):
             "TotalLiabilitiesNetMinorityInterest"
         ].fillna(calc_tl)
 
-    # --- EQUITY ---
-    # Stockholders Equity Fallback
     if df.loc["StockholdersEquity"].isna().any():
         calc_equity = df.loc["CapitalStock"].fillna(0) + df.loc[
             "RetainedEarnings"
         ].fillna(0)
         df.loc["StockholdersEquity"] = df.loc["StockholdersEquity"].fillna(calc_equity)
+
+    if "TotalAssets" in df.index and "TotalLiabilitiesNetMinorityInterest" in df.index:
+        # Calculate what the True Equity MUST be to balance the sheet
+        calculated_true_equity = df.loc["TotalAssets"].fillna(0) - df.loc[
+            "TotalLiabilitiesNetMinorityInterest"
+        ].fillna(0)
+
+        # Check if the raw StockholdersEquity is missing the Mezzanine data
+        equity_gap = calculated_true_equity - df.loc["StockholdersEquity"].fillna(0)
+
+        # If there is a structural gap (greater than rounding error), absorb the gap into Equity
+        df.loc["StockholdersEquity"] = df.loc["StockholdersEquity"].where(
+            equity_gap.abs() <= 10, calculated_true_equity
+        )
 
     final_df = df.loc[target_columns].fillna(0)
 

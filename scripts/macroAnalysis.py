@@ -188,7 +188,7 @@ class Phase2_OLS_Engine:
         features["Yield_Spread_6M"] = macro_q["Yield_Spread"].shift(2)
 
         # Drop rows where lag creation caused NaNs
-        return features.dropna()
+        return features
 
     def predict_phantom_dot(self, model, valid_cols, last_reported_date):
         """
