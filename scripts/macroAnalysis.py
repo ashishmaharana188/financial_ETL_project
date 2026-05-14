@@ -149,73 +149,74 @@ INDUSTRY_MACRO_MAP = {
 
 class Phase2_OLS_Engine:
     def __init__(self, macro_df, micro_df):
-
+        # --- BULLETPROOF DATETIME PARSING & TIMEZONE STRIPPING ---
         self.macro_df = macro_df.copy()
-
-        # Ensure dates are datetime objects and sort them
-        if not pd.api.types.is_datetime64_any_dtype(self.macro_df.index):
-            self.macro_df.index = pd.to_datetime(self.macro_df.index)
+        self.macro_df.index = pd.to_datetime(self.macro_df.index, errors="coerce")
+        self.macro_df = self.macro_df[self.macro_df.index.notnull()]
+        if self.macro_df.index.tz is not None:
+            self.macro_df.index = self.macro_df.index.tz_convert(None)
         self.macro_df.sort_index(inplace=True)
 
         self.micro_df = micro_df.copy()
         if "ReportDate" in self.micro_df.columns:
-            self.micro_df["ReportDate"] = pd.to_datetime(self.micro_df["ReportDate"])
             self.micro_df.set_index("ReportDate", inplace=True)
+
+        self.micro_df.index = pd.to_datetime(self.micro_df.index, errors="coerce")
+        self.micro_df = self.micro_df[self.micro_df.index.notnull()]
+        if self.micro_df.index.tz is not None:
+            self.micro_df.index = self.micro_df.index.tz_convert(None)
         self.micro_df.sort_index(inplace=True)
 
     def prepare_macro_features(self):
-
         # 1. Compress daily data into Quarterly Averages
-        # 'QE' maps to Quarter End.
+        # FIX: Pandas 2.2+ requires "QE" instead of "Q"
         macro_q = self.macro_df.resample("QE").mean()
 
         # 2. Apply Architectural Lenses (Lags)
-        # 1 row = 1 Quarter (3 months)
         features = pd.DataFrame(index=macro_q.index)
 
-        # 0-Month Lags (Coincident)
-        features["Brent_Crude"] = macro_q["Brent_Crude"]
-        features["USD_INR"] = macro_q["USD_INR"]
-        features["Broad_Commodity"] = macro_q["Broad_Commodity"]
+        # Helper to safely pull columns even if missing from DB
+        def safe_pull(col_name):
+            if col_name in macro_q.columns:
+                return macro_q[col_name]
+            return pd.Series(np.nan, index=macro_q.index)
 
-        # 3-Month Lags (Shift 1 Quarter)
-        features["US_Dollar_Index_3M"] = macro_q["US_Dollar_Index"].shift(1)
-        features["India_CPI_3M"] = macro_q["India_CPI"].shift(1)
+        # 0-Month Lags
+        features["Brent_Crude"] = safe_pull("Brent_Crude")
+        features["USD_INR"] = safe_pull("USD_INR")
+        features["Broad_Commodity"] = safe_pull("Broad_Commodity")
 
-        # 6-Month Lags (Shift 2 Quarters)
-        features["India_10Y_Yield_6M"] = macro_q["India_10Y_Yield"].shift(2)
-        features["US_10Y_Yield_6M"] = macro_q["US_10Y_Yield"].shift(2)
-        features["Yield_Spread_6M"] = macro_q["Yield_Spread"].shift(2)
+        # 3-Month Lags
+        features["US_Dollar_Index_3M"] = safe_pull("US_Dollar_Index").shift(1)
+        features["India_CPI_3M"] = safe_pull("India_CPI").shift(1)
 
-        # Drop rows where lag creation caused NaNs
+        # 6-Month Lags
+        features["India_10Y_Yield_6M"] = safe_pull("India_10Y_Yield").shift(2)
+        features["US_10Y_Yield_6M"] = safe_pull("US_10Y_Yield").shift(2)
+        features["Yield_Spread_6M"] = safe_pull("Yield_Spread").shift(2)
+
         return features
 
     def predict_phantom_dot(self, model, valid_cols, last_reported_date):
-        """
-        The Phantom Predictor: Calculates the forward-looking 'Ghost Dot'
-        using live macro data for the upcoming, unreleased quarter.
-        """
         X_processed = self.prepare_macro_features()
 
-        # --- FIX: Ensure time_index exists for Tier 1 / Fallback scenarios ---
+        # Force strict Quarter-Snap alignment to match trained model
+        X_processed.index = (
+            X_processed.index.to_period("Q").to_timestamp(how="end").normalize()
+        )
         X_processed["time_index"] = range(1, len(X_processed) + 1)
-        # ---------------------------------------------------------------------
 
-        # 1. Filter for macro data strictly newer than the company's last earnings report
+        last_reported_date = pd.to_datetime(last_reported_date)
         future_macro = X_processed[X_processed.index > last_reported_date]
 
         if future_macro.empty:
             return None
 
-        # 2. Isolate the immediate next unreleased quarter
         next_quarter = future_macro.iloc[[0]]
-
-        # 3. Ensure all required structural beams have live data (no NaNs)
         next_quarter_clean = next_quarter[valid_cols].dropna()
         if next_quarter_clean.empty:
             return None
 
-        # 4. Reconstruct the exact input matrix format the trained OLS model expects
         exog_cols = model.model.exog_names
         next_exog = pd.DataFrame(index=next_quarter_clean.index)
 
@@ -225,7 +226,6 @@ class Phase2_OLS_Engine:
             else:
                 next_exog[col] = next_quarter_clean[col]
 
-        # 5. Fire the live macro matrix through the bridge
         phantom_value = model.predict(next_exog).iloc[0]
 
         return {
@@ -241,22 +241,26 @@ class Phase2_OLS_Engine:
         excluded_dates=None,
         custom_beams=None,
     ):
-
-        # 1. Get processed Macro Features (X)
         X_processed = self.prepare_macro_features()
 
-        # 2. Isolate the target Micro Metric (Y) and sync the timeline
+        # --- THE ULTIMATE ALIGNMENT FIX (QUARTER-SNAP) ---
+        # Snaps all dates to exact quarter ends (e.g., 2024-03-29 becomes 2024-03-31)
+        X_processed.index = (
+            X_processed.index.to_period("Q").to_timestamp(how="end").normalize()
+        )
+
         if target_column not in self.micro_df.columns:
             return {
                 "error": f"Target column '{target_column}' not found in micro data."
             }
 
         Y_raw = self.micro_df[target_column].dropna()
+        Y_raw.index = Y_raw.index.to_period("Q").to_timestamp(how="end").normalize()
+        # --------------------------------------------------
 
         # Align X and Y on exact overlapping dates
         aligned_dates = X_processed.index.intersection(Y_raw.index)
 
-        # --- DYNAMIC K vs N TRIAGE ---
         N = len(aligned_dates)
         if N < 3:
             return {"error": f"Insufficient data (N={N}). Minimum 3 quarters required."}
@@ -264,67 +268,56 @@ class Phase2_OLS_Engine:
         X_processed["time_index"] = range(1, len(X_processed) + 1)
 
         if N < 12:
-            # TIER 1 (Spin-off): Only run a Time-Series trend
             valid_cols = ["time_index"]
-
         elif N < 24:
-            # TIER 2 (Maturing): SECTOR-MAPPED SMART DEFAULTS OR MANUAL OVERRIDE
-            # If the user selected exactly 3 beams in the UI sandbox, use those!
             if custom_beams and len(custom_beams) == 3:
                 valid_cols = custom_beams
-            # Otherwise, fall back to the smart industry defaults
             else:
                 mapped_beams = INDUSTRY_MACRO_MAP.get(
                     industry,
                     INDUSTRY_MACRO_MAP.get(sector, INDUSTRY_MACRO_MAP["DEFAULT"]),
                 )
                 valid_cols = mapped_beams
-
         else:
-            # TIER 3 (Matured): Full 8-Variable Matrix
             valid_cols = [c for c in X_processed.columns if c != "time_index"]
 
-        # Isolate exactly the columns we need, dropping NaNs
         valid_cols = [c for c in valid_cols if c in X_processed.columns]
         X_aligned = X_processed.loc[aligned_dates, valid_cols].dropna()
 
-        # Degrees of Freedom Safety Net
         if len(X_aligned) < len(valid_cols) + 3:
             valid_cols = ["time_index"]
             X_aligned = X_processed.loc[aligned_dates, valid_cols].dropna()
 
         Y_aligned = Y_raw.loc[X_aligned.index]
-        # ----------------------------------
 
-        # 3. Apply UI Triage (The Outlier Exclusions)
         if excluded_dates:
-            excluded_dt = pd.to_datetime(excluded_dates)
+            excluded_dt = (
+                pd.to_datetime(excluded_dates)
+                .to_period("Q")
+                .to_timestamp(how="end")
+                .normalize()
+            )
             X_clean = X_aligned.drop(index=excluded_dt, errors="ignore")
             Y_clean = Y_aligned.drop(index=excluded_dt, errors="ignore")
         else:
             X_clean = X_aligned
             Y_clean = Y_aligned
 
-        # 4. Build the OLS Bridge
-        X_with_const = sm.add_constant(X_clean)  # Generates the Alpha (Moat)
+        X_with_const = sm.add_constant(X_clean)
         model = sm.OLS(Y_clean, X_with_const).fit()
 
-        # 5. The Diagnostic Sweep (Cook's D, Residuals, Confidence Bands)
         predictions = model.get_prediction(X_with_const)
-        summary_frame = predictions.summary_frame(alpha=0.05)  # 95% Confidence Level
+        summary_frame = predictions.summary_frame(alpha=0.05)
 
         influence = OLSInfluence(model)
         cooks_d = influence.cooks_distance[0]
 
-        # ---  CALCULATE OUTLIER BOOLEANS (4/N Threshold) ---
         N_clean = len(Y_clean)
         cooks_threshold = 4 / N_clean if N_clean > 0 else 0
         is_outlier = [bool(cd > cooks_threshold) for cd in cooks_d]
-        # -------------------------------------------------------
 
         residuals = Y_clean - model.fittedvalues
 
-        # 6. Package the JSON Payload for the Dashboard Control Room
         payload = {
             "target_metric": target_column,
             "r_squared": round(model.rsquared, 4),
@@ -341,13 +334,11 @@ class Phase2_OLS_Engine:
                 "conf_lower": summary_frame["obs_ci_lower"].tolist(),
                 "conf_upper": summary_frame["obs_ci_upper"].tolist(),
                 "cooks_distance": list(cooks_d),
-                "is_outlier": is_outlier,  # <--- Passes the True/False list to UI
+                "is_outlier": is_outlier,
             },
         }
 
-        # ---  STEP 7 THE PHANTOM PREDICTOR ---
         last_date = Y_clean.index.max()
         payload["phantom_dot"] = self.predict_phantom_dot(model, valid_cols, last_date)
-        # -----------------------------------------
 
         return payload
