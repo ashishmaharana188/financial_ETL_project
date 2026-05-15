@@ -265,17 +265,17 @@ def fetch_interest_coverage(ticker: str, data_source: str) -> pd.DataFrame:
             "OperatingIncome", "NetInterestIncome",
             
             -- FIX: Winsorize (Cap) the Coverage Math at 99.99x to protect regression models
+            -- Removed the faulty polarity assumption. We now use ABS() for all APIs.
             CASE 
-                WHEN "NetInterestIncome" IS NULL OR "NetInterestIncome" = 0 THEN NULL
-                WHEN "NetInterestIncome" > 0 THEN 99.99
+                WHEN "NetInterestIncome" IS NULL OR "NetInterestIncome" = 0 THEN 99.99
                 WHEN ("OperatingIncome" / ABS("NetInterestIncome")) > 99.99 THEN 99.99
                 ELSE ROUND("OperatingIncome" / ABS("NetInterestIncome"), 2) 
             END AS interest_coverage,
             
-            -- Solvency Triage remains the same
+            -- Solvency Triage
             CASE 
                 WHEN "NetInterestIncome" IS NULL THEN FALSE
-                WHEN "NetInterestIncome" >= 0 THEN TRUE 
+                WHEN "NetInterestIncome" = 0 AND "OperatingIncome" > 0 THEN TRUE
                 WHEN ("OperatingIncome" / ABS("NetInterestIncome")) > 1.5 THEN TRUE 
                 ELSE FALSE 
             END AS swarm_pass_solvency
@@ -297,8 +297,8 @@ def fetch_asset_turnover(ticker: str, data_source: str) -> pd.DataFrame:
                 i."Ticker", i."ReportDate", 
                 i."TotalRevenue", 
                 b."TotalAssets"
-            FROM quarterly_income_statement i
-            JOIN quarterly_balance_sheet b 
+            FROM yearly_income_statement i
+            JOIN yearly_balance_sheet b 
             ON i."Ticker" = b."Ticker" AND i."ReportDate" = b."ReportDate" AND i."DataSource" = b."DataSource"
             WHERE i."Ticker" = :ticker AND i."DataSource" = :data_source
         )
@@ -306,7 +306,7 @@ def fetch_asset_turnover(ticker: str, data_source: str) -> pd.DataFrame:
             "Ticker", "ReportDate",
             "TotalRevenue", "TotalAssets",
             CASE WHEN "TotalAssets" IS NULL OR "TotalAssets" = 0 THEN NULL
-                 ELSE ROUND("TotalRevenue" / "TotalAssets", 2) END AS asset_turnover
+                 ELSE ROUND(("TotalRevenue" * 1.0) / "TotalAssets", 2) END AS asset_turnover
         FROM at_data
         ORDER BY "ReportDate" DESC;
     """)

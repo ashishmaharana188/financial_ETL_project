@@ -1972,6 +1972,23 @@ def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
                         "NetFinancingCashFlow",
                         "CashFromFinanceActivity",
                     )
+
+                elif source == "screener":
+
+                    def inject_synonym(syn_map, target_key, new_word):
+                        existing = syn_map.get(target_key, [target_key])
+                        if existing and isinstance(existing[0], str):
+                            if new_word not in existing:
+                                syn_map[target_key] = existing + [new_word]
+                        else:
+                            syn_map[target_key] = existing + [[new_word]]
+
+                    # Inject Bank-Specific Terms to catch IDFCFIRSTB and other financials
+                    inject_synonym(normalized_is_synonym_map, "TotalRevenue", "Revenue")
+                    inject_synonym(
+                        normalized_is_synonym_map, "OperatingIncome", "FinancingProfit"
+                    )
+
                 is_keys = ittelson_income_statement_columns + [
                     "PretaxIncome",
                     "MaterialCost",

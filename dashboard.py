@@ -301,13 +301,13 @@ elif app_mode == "Single Company Deep Dive":
             df_de = fetch_debt_to_equity(selected_db_ticker, selected_source)
             df_ccc = fetch_ccc(selected_db_ticker, selected_source)
             df_dol = fetch_dol(selected_db_ticker, selected_source)
+            df_turnover = fetch_asset_turnover(selected_db_ticker, selected_source)
 
             # Fetch Phase 2: Tactical Responders (Strictly Isolated)
             df_op_margin = fetch_operating_margin(selected_db_ticker, selected_source)
             df_gr_margin = fetch_gross_margin(selected_db_ticker, selected_source)
             df_int_cov = fetch_interest_coverage(selected_db_ticker, selected_source)
             df_cfo_pat = fetch_cfo_to_pat(selected_db_ticker, selected_source)
-            df_turnover = fetch_asset_turnover(selected_db_ticker, selected_source)
 
             if "Predictive" in view_mode and edgar_break_date:
                 cutoff = pd.to_datetime(edgar_break_date)
@@ -341,7 +341,7 @@ elif app_mode == "Single Company Deep Dive":
             st.subheader("Structural Anchors")
             st.caption("Long-term capital efficiency and survival metrics.")
 
-            yc1, yc2, yc3, yc4, yc5 = st.columns(5)
+            yc1, yc2, yc3, yc4, yc5, yc6 = st.columns(6)
             with yc1:
                 latest_roic = (
                     df_roic["roic"].iloc[0] * 100
@@ -380,13 +380,21 @@ elif app_mode == "Single Company Deep Dive":
                     else 0
                 )
                 st.metric("Op. Leverage (DOL)", f"{latest_dol:.2f}x")
+            with yc6:
+                latest_turnover = (
+                    df_turnover["asset_turnover"].iloc[0]
+                    if not df_turnover.empty
+                    and pd.notnull(df_turnover["asset_turnover"].iloc[0])
+                    else 0
+                )
+                st.metric("Asset Turnover", f"{latest_turnover:.2f}x")
 
             # --- MIDDLE LEVEL: TACTICAL RESPONDERS (PHASE 2) ---
             st.divider()
             st.subheader("Phase 2: Tactical Responders")
             st.caption("Immediate shock absorbers for macro weather impacts.")
 
-            qc1, qc2, qc3, qc4, qc5 = st.columns(5)
+            qc1, qc2, qc3, qc4 = st.columns(4)
             with qc1:
                 latest_op_margin = (
                     df_op_margin["operating_margin"].iloc[0] * 100
@@ -419,14 +427,6 @@ elif app_mode == "Single Company Deep Dive":
                     else 0
                 )
                 st.metric("CFO / PAT", f"{latest_cfo_pat:.2f}")
-            with qc5:
-                latest_turnover = (
-                    df_turnover["asset_turnover"].iloc[0]
-                    if not df_turnover.empty
-                    and pd.notnull(df_turnover["asset_turnover"].iloc[0])
-                    else 0
-                )
-                st.metric("Asset Turnover", f"{latest_turnover:.2f}x")
 
             # --- BOTTOM LEVEL: RAW DATA ROOM ---
             st.divider()
@@ -463,6 +463,13 @@ elif app_mode == "Single Company Deep Dive":
                             on="ReportDate",
                             how="outer",
                         )
+                    if not df_turnover.empty:
+                        p1_merged = pd.merge(
+                            p1_merged,
+                            df_turnover[["ReportDate", "asset_turnover"]],
+                            on="ReportDate",
+                            how="outer",
+                        )
                     st.dataframe(
                         p1_merged.sort_values(by="ReportDate", ascending=False),
                         use_container_width=True,
@@ -491,13 +498,6 @@ elif app_mode == "Single Company Deep Dive":
                         p2_merged = pd.merge(
                             p2_merged,
                             df_cfo_pat[["ReportDate", "cfo_to_pat"]],
-                            on="ReportDate",
-                            how="outer",
-                        )
-                    if not df_turnover.empty:
-                        p2_merged = pd.merge(
-                            p2_merged,
-                            df_turnover[["ReportDate", "asset_turnover"]],
                             on="ReportDate",
                             how="outer",
                         )

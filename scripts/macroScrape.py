@@ -123,7 +123,7 @@ def push_to_database(df):
         print(f"DATABASE ERROR\n{e}")
 
 
-def run_macro_pipeline(period_days=1500):
+def run_macro_pipeline(period_days=3000):
     print(f"\nStarting Macro Pipeline for {period_days} days...")
     final_df = fetch_hybrid_macro_data(period_days=period_days)
 
