@@ -96,13 +96,12 @@
   },
   "normalized_bs_synonym_map": {
     "CashCashEquivalentsAndShortTermInvestments": [
-      "CashAndEquivalents",
-      "CashEquivalents",
-      "Cash",
-      "EndCashPosition",
-      "OtherBalancesWithBanks",
-      "CurrentInvestments",
-      "BankBalancesOtherThanCashAndCashEquivalents"
+      "CashCashEquivalentsAndShortTermInvestments",
+      "CashAndCashEquivalents",
+      "CashFinancial",
+      "CashAndShortTermInvestments",
+      "CashAndCashEquivalentsAtCarryingValue",
+      "CurrentInvestments"
     ],
     "Receivables": [
       "Receivables",

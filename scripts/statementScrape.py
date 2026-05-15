@@ -1369,11 +1369,15 @@ def apply_indirect_cash_flow_fallbacks(
             op_items.append("DepreciationAndAmortization")
 
         valid_op = [i for i in op_items if i in df.index]
-        ocf_gap = df.loc["TotalOperatingCashFlow"].fillna(0) - df.loc[valid_op].sum()
+        reported_ocf = df.loc["TotalOperatingCashFlow"].replace(0, np.nan)
+        calc_ocf = df.loc[valid_op].sum()
+        ocf_gap = reported_ocf - calc_ocf
         if "OtherWorkingCapitalChanges" in df.index:
-            df.loc["OtherWorkingCapitalChanges"] = df.loc[
-                "OtherWorkingCapitalChanges"
-            ].fillna(0) + ocf_gap.fillna(0)
+            df.loc["OtherWorkingCapitalChanges"] = (
+                df.loc["OtherWorkingCapitalChanges"].fillna(0)
+                + ocf_gap.where(reported_ocf.notna(), 0).fillna(0)
+            )
+        df.loc["TotalOperatingCashFlow"] = reported_ocf.fillna(calc_ocf).fillna(0)
 
     if "TotalInvestingCashFlow" in df.index:
         icf_items = [
@@ -1382,11 +1386,15 @@ def apply_indirect_cash_flow_fallbacks(
             "OtherInvestingActivities",  # <--- FIX 1: Included to prevent double-counting
         ]
         valid_icf = [i for i in icf_items if i in df.index]
-        icf_gap = df.loc["TotalInvestingCashFlow"].fillna(0) - df.loc[valid_icf].sum()
+        reported_icf = df.loc["TotalInvestingCashFlow"].replace(0, np.nan)
+        calc_icf = df.loc[valid_icf].sum()
+        icf_gap = reported_icf - calc_icf
         if "OtherInvestingActivities" in df.index:
-            df.loc["OtherInvestingActivities"] = df.loc[
-                "OtherInvestingActivities"
-            ].fillna(0) + icf_gap.fillna(0)
+            df.loc["OtherInvestingActivities"] = (
+                df.loc["OtherInvestingActivities"].fillna(0)
+                + icf_gap.where(reported_icf.notna(), 0).fillna(0)
+            )
+        df.loc["TotalInvestingCashFlow"] = reported_icf.fillna(calc_icf).fillna(0)
 
     if "TotalFinancingCashFlow" in df.index:
         fcf_items = [
@@ -1396,11 +1404,15 @@ def apply_indirect_cash_flow_fallbacks(
             "OtherFinancingActivities",  # <--- FIX 1: Included to prevent double-counting
         ]
         valid_fcf = [i for i in fcf_items if i in df.index]
-        fcf_gap = df.loc["TotalFinancingCashFlow"].fillna(0) - df.loc[valid_fcf].sum()
+        reported_fcf = df.loc["TotalFinancingCashFlow"].replace(0, np.nan)
+        calc_fcf = df.loc[valid_fcf].sum()
+        fcf_gap = reported_fcf - calc_fcf
         if "OtherFinancingActivities" in df.index:
-            df.loc["OtherFinancingActivities"] = df.loc[
-                "OtherFinancingActivities"
-            ].fillna(0) + fcf_gap.fillna(0)
+            df.loc["OtherFinancingActivities"] = (
+                df.loc["OtherFinancingActivities"].fillna(0)
+                + fcf_gap.where(reported_fcf.notna(), 0).fillna(0)
+            )
+        df.loc["TotalFinancingCashFlow"] = reported_fcf.fillna(calc_fcf).fillna(0)
 
     # --- 4. NET CHANGE IN CASH CALCULATION (Fixes Critical Rollforward Leaks) ---
     if "NetChangeInCash" in df.index:
@@ -1423,15 +1435,10 @@ def apply_indirect_cash_flow_fallbacks(
 
     # --- 5. SAFETY CHECK ---
     if "TotalOperatingCashFlow" in df.index:
-        final_op_items = valid_op + (
-            ["OtherWorkingCapitalChanges"]
-            if "OtherWorkingCapitalChanges" in df.index
-            else []
-        )
         df.loc["TotalOperatingCashFlow"] = (
             df.loc["TotalOperatingCashFlow"]
             .replace(0, np.nan)
-            .fillna(df.loc[final_op_items].sum())
+            .fillna(df.loc[valid_op].sum())
             .fillna(0)
         )
 
