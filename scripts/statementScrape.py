@@ -888,7 +888,7 @@ def apply_income_statement_fallbacks(df, target_columns):
 # Balance Sheet Fallback
 
 
-def apply_balance_sheet_fallbacks(df, target_columns):
+def apply_balance_sheet_fallbacks(df, target_columns, is_screener=False):
 
     # ASSETS
 
@@ -991,6 +991,21 @@ def apply_balance_sheet_fallbacks(df, target_columns):
             "RetainedEarnings"
         ].fillna(0)
         df.loc["StockholdersEquity"] = df.loc["StockholdersEquity"].fillna(calc_equity)
+
+    if (
+        is_screener
+        and "TotalAssets" in df.index
+        and "TotalLiabilitiesNetMinorityInterest" in df.index
+    ):
+
+        is_trap = df.loc["TotalLiabilitiesNetMinorityInterest"] == df.loc["TotalAssets"]
+        true_liab = df.loc["TotalAssets"].fillna(0) - df.loc[
+            "StockholdersEquity"
+        ].fillna(0)
+
+        df.loc["TotalLiabilitiesNetMinorityInterest"] = df.loc[
+            "TotalLiabilitiesNetMinorityInterest"
+        ].where(~is_trap, true_liab)
 
     if "TotalAssets" in df.index and "TotalLiabilitiesNetMinorityInterest" in df.index:
         # Calculate what the True Equity MUST be to balance the sheet
@@ -1307,12 +1322,19 @@ def apply_indirect_cash_flow_fallbacks(
     if "TotalOperatingCashFlow" in df.index:
         op_items = [
             "NetIncome",
-            "DepreciationAndAmortization",
             "OtherNonCashAdjustments",
             "ChangeInAccountsReceivable",
             "ChangeInInventory",
             "ChangeInAccountsPayable",
+            "OtherWorkingCapitalChanges",
         ]
+
+        # FIX 2: Align with the Auditor's exact expectation for Screener vs US data
+        if is_screener:
+            op_items.append("IncomeTaxPaid")
+        else:
+            op_items.append("DepreciationAndAmortization")
+
         valid_op = [i for i in op_items if i in df.index]
         ocf_gap = df.loc["TotalOperatingCashFlow"].fillna(0) - df.loc[valid_op].sum()
         if "OtherWorkingCapitalChanges" in df.index:
@@ -1321,7 +1343,11 @@ def apply_indirect_cash_flow_fallbacks(
             ].fillna(0) + ocf_gap.fillna(0)
 
     if "TotalInvestingCashFlow" in df.index:
-        icf_items = ["CapExPurchaseOfPPE", "PurchaseSaleOfInvestments"]
+        icf_items = [
+            "CapExPurchaseOfPPE",
+            "PurchaseSaleOfInvestments",
+            "OtherInvestingActivities",  # <--- FIX 1: Included to prevent double-counting
+        ]
         valid_icf = [i for i in icf_items if i in df.index]
         icf_gap = df.loc["TotalInvestingCashFlow"].fillna(0) - df.loc[valid_icf].sum()
         if "OtherInvestingActivities" in df.index:
@@ -1334,6 +1360,7 @@ def apply_indirect_cash_flow_fallbacks(
             "NetDebtIssuedRepaid",
             "NetStockIssuedRepurchased",
             "DividendsPaid",
+            "OtherFinancingActivities",  # <--- FIX 1: Included to prevent double-counting
         ]
         valid_fcf = [i for i in fcf_items if i in df.index]
         fcf_gap = df.loc["TotalFinancingCashFlow"].fillna(0) - df.loc[valid_fcf].sum()
@@ -1996,18 +2023,26 @@ def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
                     )
 
                 if dfBalanceSheetQ is not None:
+                    # Dynamically set the flag if the source uses Indian accounting logic
+                    screener_active = source in ["screener"]
+
                     dfBalanceSheetQ_calc = apply_balance_sheet_fallbacks(
                         map_statement_via_dictionary(
                             dfBalanceSheetQ, normalized_bs_synonym_map, bs_keys
                         ),
                         ittelson_balance_sheet_columns,
+                        is_screener=screener_active,
                     )
+
                 if dfBalanceSheetY is not None:
+                    screener_active = source in ["screener"]
+
                     dfBalanceSheetY_calc = apply_balance_sheet_fallbacks(
                         map_statement_via_dictionary(
                             dfBalanceSheetY, normalized_bs_synonym_map, bs_keys
                         ),
                         ittelson_balance_sheet_columns,
+                        is_screener=screener_active,
                     )
 
                 if dfCashFlowQ is not None:
