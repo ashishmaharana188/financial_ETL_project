@@ -265,18 +265,18 @@ def fetch_interest_coverage(ticker: str, data_source: str) -> pd.DataFrame:
             "OperatingIncome", "NetInterestIncome",
             
             -- FIX: Winsorize (Cap) the Coverage Math at 99.99x to protect regression models
-            -- Removed the faulty polarity assumption. We now use ABS() for all APIs.
             CASE 
                 WHEN "NetInterestIncome" IS NULL OR "NetInterestIncome" = 0 THEN 99.99
-                WHEN ("OperatingIncome" / ABS("NetInterestIncome")) > 99.99 THEN 99.99
-                ELSE ROUND("OperatingIncome" / ABS("NetInterestIncome"), 2) 
+                WHEN ("OperatingIncome" / NULLIF(ABS("NetInterestIncome"), 0)) > 99.99 THEN 99.99
+                ELSE ROUND("OperatingIncome" / NULLIF(ABS("NetInterestIncome"), 0), 2) 
             END AS interest_coverage,
             
             -- Solvency Triage
             CASE 
                 WHEN "NetInterestIncome" IS NULL THEN FALSE
-                WHEN "NetInterestIncome" = 0 AND "OperatingIncome" > 0 THEN TRUE
-                WHEN ("OperatingIncome" / ABS("NetInterestIncome")) > 1.5 THEN TRUE 
+                WHEN "NetInterestIncome" = 0 THEN 
+                    CASE WHEN "OperatingIncome" > 0 THEN TRUE ELSE FALSE END
+                WHEN ("OperatingIncome" / NULLIF(ABS("NetInterestIncome"), 0)) > 1.5 THEN TRUE 
                 ELSE FALSE 
             END AS swarm_pass_solvency
             
