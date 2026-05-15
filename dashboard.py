@@ -100,7 +100,8 @@ if app_mode == "ETL Control Center":
         [
             "Auto-Rotate (FMP -> Alpha Vantage)",
             "Financial Modeling Prep (FMP)",
-            "Alpha Vantage",
+            "Alpha Vantage (Strictly US)",
+            "IndianAPI (Strictly India)",  # <--- NEW NATIVE SPIGOT
             "Yahoo Finance",
             "Screener.in",
         ],
@@ -112,7 +113,8 @@ if app_mode == "ETL Control Center":
     spigot_map = {
         "Auto-Rotate (FMP -> Alpha Vantage)": "auto",
         "Financial Modeling Prep (FMP)": "fmp",
-        "Alpha Vantage": "vantage",
+        "Alpha Vantage (Strictly US)": "vantage",
+        "IndianAPI (Strictly India)": "indianapi",  # <--- NEW MAPPING
         "Yahoo Finance": "yfinance",
         "Screener.in": "screener",
     }

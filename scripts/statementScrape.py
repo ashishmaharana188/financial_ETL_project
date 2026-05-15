@@ -34,6 +34,8 @@ runtime.load_models()
 API_KEY = "875S8KE5GDSRVN1Z"
 # fmp api key
 FMP_API_KEY = "039c30159a83647be8f02d571df7f52a"
+
+INDIAN_API_KEY = "sk-live-1I7ZTltXU33fcVymDEc6FPfsGeEO2pNG3dlbSAU3"
 # disable certificate warnings
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -358,6 +360,55 @@ def get_screener_financials(ticker, report_type="yearly"):
     return None
 
 
+## INDIANAPI SCRAPPER
+def get_indianapi_financials(ticker, stat_type, api_key, cache_dir=CACHE_DIR):
+
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir)
+
+    filename = f"indianapi_{ticker}_{stat_type}.json"
+    file_path = os.path.join(cache_dir, filename)
+
+    if os.path.exists(file_path):
+        print(f"Loading IndianAPI {ticker} ({stat_type}) from local cache")
+        with open(file_path, "r") as f:
+            return json.load(f)
+
+    clean_ticker = ticker.replace(".NS", "").replace(".BO", "")
+    print(f"Fetching {clean_ticker} {stat_type} from IndianAPI...")
+
+    url = f"https://stock.indianapi.in/statement?stock_name={clean_ticker}&stats={stat_type}"
+    headers = {"x-api-key": api_key}
+
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code == 200:
+            data = response.json()
+
+            if "error" in data:
+                print(
+                    f"IndianAPI explicitly rejected the request for {ticker} ({stat_type}). Reason: {data['error']}"
+                )
+                return None
+
+            if data:
+                with open(file_path, "w") as f:
+                    json.dump(data, f)
+                return data
+            else:
+                print(f"IndianAPI returned empty data for {ticker} ({stat_type}).")
+                return None
+        else:
+            print(
+                f"IndianAPI Error {response.status_code} for {ticker}: {response.text}"
+            )
+            return None
+
+    except Exception as e:
+        print(f"IndianAPI Request failed for {ticker}: {e}")
+        return None
+
+
 ## ALL API CALL FUNCTION FOR FINANCIALS
 
 
@@ -463,6 +514,44 @@ def fetch_all_financials(ticker, requested_source="auto"):
                     "is_y": sc_is_y,
                     "bs_y": sc_bs_y,
                     "cf_y": sc_cf_y,
+                },
+            }
+        return None
+
+    # --- INDIANAPI.IN ---
+    if current_source == "indianapi":
+        print(f"[{ticker}] Pinging IndianAPI.in...")
+
+        # Make the 4 distinct calls required by the API
+        ind_is_y = get_indianapi_financials(ticker, "yoy_results", INDIAN_API_KEY)
+        ind_is_q = get_indianapi_financials(ticker, "quarter_results", INDIAN_API_KEY)
+        ind_bs_y = get_indianapi_financials(ticker, "balancesheet", INDIAN_API_KEY)
+        ind_cf_y = get_indianapi_financials(ticker, "cashflow", INDIAN_API_KEY)
+
+        # --- FORENSIC DEBUGGING (To build the Pandas Mappers) ---
+        if ind_is_y:
+            print("\n[INDIAN API 'yoy_results' SCHEMATIC]")
+            if isinstance(ind_is_y, dict):
+                print(f"Keys: {list(ind_is_y.keys())}")
+                for k in list(ind_is_y.keys())[:2]:
+                    if isinstance(ind_is_y[k], dict):
+                        print(f" -> Inside '{k}': {list(ind_is_y[k].keys())[:5]}")
+            elif isinstance(ind_is_y, list):
+                print(f"Returned a List with {len(ind_is_y)} items.")
+                if len(ind_is_y) > 0:
+                    print(f"First item keys: {list(ind_is_y[0].keys())}")
+            print("--------------------------------------\n")
+        # --------------------------------------------------------
+
+        if ind_is_y and ind_bs_y and ind_cf_y:
+            print(f"[{ticker}] SUCCESS: Complete IndianAPI dataset acquired.")
+            return {
+                "source": "indianapi",
+                "data": {
+                    "is_y": ind_is_y,
+                    "is_q": ind_is_q,
+                    "bs_y": ind_bs_y,
+                    "cf_y": ind_cf_y,
                 },
             }
         return None
@@ -774,11 +863,11 @@ def apply_income_statement_fallbacks(df, target_columns):
     if df.loc["OperatingIncome"].isna().any():
         df.loc["OperatingIncome"] = df.loc["OperatingIncome"].fillna(calc_op_inc)
 
-    # If the API gave a number that mathematically violates the GP - Opex equation by more than a rounding error, overwrite it.
-    discrepancy = (df.loc["OperatingIncome"] - calc_op_inc).abs()
-    df.loc["OperatingIncome"] = df.loc["OperatingIncome"].where(
-        discrepancy < 10, calc_op_inc
-    )
+    ## If the API gave a number that mathematically violates the GP - Opex equation by more than a rounding error, overwrite it.
+    # discrepancy = (df.loc["OperatingIncome"] - calc_op_inc).abs()
+    # df.loc["OperatingIncome"] = df.loc["OperatingIncome"].where(
+    #    discrepancy < 10, calc_op_inc
+    # )
 
     # NetInterestIncome Fallback: PretaxIncome - OperatingIncome
     if df.loc["NetInterestIncome"].isna().any():
@@ -1074,7 +1163,7 @@ def apply_cash_flow_fallbacks(df, target_columns, df_is_calc=None, df_bs_calc=No
 
 
 def apply_indirect_cash_flow_fallbacks(
-    df, target_columns, df_is_calc=None, df_bs_calc=None
+    df, target_columns, df_is_calc=None, df_bs_calc=None, is_screener=False
 ):
     df.columns = [pd.to_datetime(c).strftime("%Y-%m-%d") for c in df.columns]
 
@@ -1200,13 +1289,19 @@ def apply_indirect_cash_flow_fallbacks(
             pd.to_datetime(c).strftime("%Y-%m-%d") for c in df_is_calc.columns
         ]
         is_cols = df.columns.intersection(df_is_calc.columns)
+
         if "NetIncome" in df_is_calc.index:
-            df.loc["NetIncome", is_cols] = (
-                df.loc["NetIncome", is_cols]
-                .replace(0, np.nan)
-                .fillna(df_is_calc.loc["NetIncome", is_cols])
-                .fillna(0)
-            )
+            if is_screener:
+
+                df.loc["NetIncome", is_cols] = df_is_calc.loc["NetIncome", is_cols]
+            else:
+
+                df.loc["NetIncome", is_cols] = (
+                    df.loc["NetIncome", is_cols]
+                    .replace(0, np.nan)
+                    .fillna(df_is_calc.loc["NetIncome", is_cols])
+                    .fillna(0)
+                )
 
     # --- 3. FORCE BALANCE PLUG MATRIX (Eliminates Zeroes and Leaks) ---
     if "TotalOperatingCashFlow" in df.index:
@@ -1322,7 +1417,9 @@ def validate_financial_statements(
 
     is_calc = df_is["GrossProfit"] - df_is["OperatingExpense"]
     is_gap = df_is["OperatingIncome"] - is_calc
-    is_check = is_gap.abs() < 1
+    is_check = (
+        is_gap.abs() < 1
+    )  ## add tolerance <= (df_is["OperatingIncome"].abs() * 0.10) + 5.0
     if is_check.all():
         print(" Income Statement Equation (GP - Opex = OpInc): PERFECT MATCH")
     else:
@@ -1650,6 +1747,32 @@ def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
                     .rename_axis(None)
                     .T
                 )
+            elif source == "indianapi":
+
+                current_date = pd.Timestamp.today().strftime("%Y-%m-%d")
+
+                dfIncomeStatementY = (
+                    pd.Series(data.get("is_y", {})).to_frame(name=current_date)
+                    if data.get("is_y")
+                    else None
+                )
+                dfIncomeStatementQ = (
+                    pd.Series(data.get("is_q", {})).to_frame(name=current_date)
+                    if data.get("is_q")
+                    else None
+                )
+                dfBalanceSheetY = (
+                    pd.Series(data.get("bs_y", {})).to_frame(name=current_date)
+                    if data.get("bs_y")
+                    else None
+                )
+                dfCashFlowY = (
+                    pd.Series(data.get("cf_y", {})).to_frame(name=current_date)
+                    if data.get("cf_y")
+                    else None
+                )
+                dfBalanceSheetQ = None
+                dfCashFlowQ = None
 
             print(f"[{ticker}] Backing up raw data to JSONB Vault...")
 
@@ -1688,6 +1811,9 @@ def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
                 ).upper()
                 stmt_multiplier = 0.000001
             elif source == "screener":
+                stmt_currency = "INR"
+                stmt_multiplier = 10.0
+            elif source == "indianapi":
                 stmt_currency = "INR"
                 stmt_multiplier = 10.0
             elif source == "fmp":
@@ -1734,7 +1860,91 @@ def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
                         dfIncomeStatementY
                     )
 
-            if source in ["yfinance", "screener", "vantage", "fmp"]:
+            if source in [
+                "yfinance",
+                "screener",
+                "vantage",
+                "fmp",
+                "indianapi",
+            ]:  # <--- ADDED INDIANAPI
+
+                if source == "indianapi":
+                    # Helper function to safely inject vocabulary into either flat or nested dictionary maps
+                    def inject_synonym(syn_map, target_key, new_word):
+                        existing = syn_map.get(target_key, [target_key])
+                        if existing and isinstance(existing[0], str):
+                            # It is a flat list
+                            if new_word not in existing:
+                                syn_map[target_key] = existing + [new_word]
+                        else:
+                            # It is a nested bucket list
+                            syn_map[target_key] = existing + [[new_word]]
+
+                    # Income Statement
+                    inject_synonym(normalized_is_synonym_map, "TotalRevenue", "Sales")
+                    inject_synonym(
+                        normalized_is_synonym_map, "OperatingExpense", "Expenses"
+                    )
+                    inject_synonym(
+                        normalized_is_synonym_map, "OperatingIncome", "OperatingProfit"
+                    )
+                    inject_synonym(
+                        normalized_is_synonym_map, "PretaxIncome", "ProfitBeforeTax"
+                    )
+                    inject_synonym(normalized_is_synonym_map, "NetIncome", "NetProfit")
+                    inject_synonym(
+                        normalized_is_synonym_map,
+                        "DepreciationAndAmortization",
+                        "Depreciation",
+                    )
+
+                    # Balance Sheet
+                    inject_synonym(
+                        normalized_bs_synonym_map, "CapitalStock", "ShareCapital"
+                    )
+                    inject_synonym(
+                        normalized_bs_synonym_map, "RetainedEarnings", "Reserves"
+                    )
+                    inject_synonym(
+                        normalized_bs_synonym_map, "LongTermBorrowings", "Borrowings"
+                    )
+                    inject_synonym(
+                        normalized_bs_synonym_map,
+                        "OtherLiabilities",
+                        "OtherLiabilities",
+                    )
+                    inject_synonym(
+                        normalized_bs_synonym_map,
+                        "TotalLiabilitiesNetMinorityInterest",
+                        "TotalLiabilities",
+                    )
+                    inject_synonym(normalized_bs_synonym_map, "GrossPPE", "FixedAssets")
+                    inject_synonym(
+                        normalized_bs_synonym_map, "Investments", "Investments"
+                    )
+                    inject_synonym(
+                        normalized_bs_synonym_map, "OtherAssetItems", "OtherAssets"
+                    )
+                    inject_synonym(
+                        normalized_bs_synonym_map, "TotalAssets", "TotalAssets"
+                    )
+
+                    # Cash Flow
+                    inject_synonym(
+                        normalized_cf_synonym_map,
+                        "CashFromOperations",
+                        "CashFromOperatingActivity",
+                    )
+                    inject_synonym(
+                        normalized_cf_synonym_map,
+                        "NetInvestingCashFlow",
+                        "CashFromInvestingActivity",
+                    )
+                    inject_synonym(
+                        normalized_cf_synonym_map,
+                        "NetFinancingCashFlow",
+                        "CashFromFinanceActivity",
+                    )
                 is_keys = ittelson_income_statement_columns + [
                     "PretaxIncome",
                     "MaterialCost",
@@ -1820,6 +2030,9 @@ def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
                     )
 
                 if dfCashFlowY is not None:
+                    # Dynamically set the flag if the current source is Screener
+                    screener_active = source == "screener"
+
                     dfInDirectCashFlowY_calc = apply_indirect_cash_flow_fallbacks(
                         map_statement_via_dictionary(
                             dfCashFlowY,
@@ -1830,6 +2043,7 @@ def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
                         ittelson_indirect_cf_columns,
                         df_is_calc=dfIncomeStatementY_calc,
                         df_bs_calc=dfBalanceSheetY_calc,
+                        is_screener=screener_active,
                     )
 
             else:
