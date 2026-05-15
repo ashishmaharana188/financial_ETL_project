@@ -295,9 +295,18 @@ def get_screener_financials(ticker, report_type="yearly"):
 
     if table:
         # EXACT ORIGINAL PARSING: Date columns (Headers)
-        headers = [
-            th.get_text(strip=True) for th in table.find("thead").find_all("th")
-        ][1:]
+        headers = []
+        for th in table.find("thead").find_all("th")[1:]:
+            # Use a space separator to prevent 'Mar 2018' and '3m' concatenating into 'Mar 20183m'
+            raw_text = th.get_text(separator=" ", strip=True)
+
+            # Use regex to reliably extract the 'Mon YYYY' part (e.g., 'Mar 2018')
+            match = re.search(r"([A-Za-z]{3}\s\d{4})", raw_text)
+            if match:
+                headers.append(match.group(1))
+            else:
+                headers.append(raw_text)  # Fallback for edge cases like 'TTM'
+
         financial_data = {date: {} for date in headers}
 
         # Parse Rows (Main Line Items)
@@ -565,7 +574,31 @@ def fetch_all_financials(ticker, requested_source="auto"):
 def update_company_profile(ticker: str):
     """Fetches Sector/Industry from yfinance and upserts into the database."""
     try:
-        info = yf.Ticker(ticker).info
+        # Try the base ticker first, then append .NS if it fails or lacks sector data
+        tickers_to_try = [ticker, f"{ticker}.NS"]
+
+        info = {}
+        for t in tickers_to_try:
+            try:
+                temp_info = yf.Ticker(t).info
+                if (
+                    temp_info
+                    and temp_info.get("sector")
+                    and temp_info.get("sector") != "Unknown"
+                ):
+                    info = temp_info
+                    if t != ticker:
+                        print(f"[{ticker}] Found profile using fallback ticker: {t}")
+                    break
+            except Exception:
+                continue
+
+        # Fallback if both attempts fail to yield a populated dictionary
+        if not info:
+            try:
+                info = yf.Ticker(ticker).info
+            except Exception:
+                info = {}
 
         # Use .get() so it doesn't crash if a specific stock is missing data
         sector = info.get("sector", "Unknown")

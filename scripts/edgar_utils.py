@@ -3,15 +3,30 @@ import pandas as pd
 from sqlalchemy import text
 from scripts.database import engine
 import time
+from functools import lru_cache
+
+
+@lru_cache(maxsize=1)
+def _fetch_sec_tickers():
+    """Fetches and caches the SEC ticker list so it only downloads once per run."""
+    headers = {"User-Agent": "SwarmAgent Admin@yourdomain.com"}
+    url = "https://www.sec.gov/files/company_tickers.json"
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        print(f"Error fetching SEC tickers: {e}")
+    return {}
 
 
 def get_cik(ticker: str) -> str:
-    headers = {"User-Agent": "SwarmAgent Admin@yourdomain.com"}
-    url = "https://www.sec.gov/files/company_tickers.json"
-    response = requests.get(url, headers=headers)
+    # Strip exchange suffixes to ensure clean matching
+    clean_ticker = ticker.upper().replace(".NS", "").replace(".BO", "")
+    sec_data = _fetch_sec_tickers()
 
-    for item in response.json().values():
-        if item["ticker"].upper() == ticker.upper():
+    for item in sec_data.values():
+        if item["ticker"].upper() == clean_ticker:
             return str(item["cik_str"]).zfill(10)
     return None
 

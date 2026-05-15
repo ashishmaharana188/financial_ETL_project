@@ -2,3 +2,13 @@ source venv/Scripts/activate
 streamlit run dashboard.py
 python -m scripts.statementScrape
 pip install -r requirements.txt
+
+
+"USD_INR"
+"US_Dollar_Index"
+"Broad_Commodity"
+"Brent_Crude"
+"US_10Y_Yield"
+"Yield_Spread"
+"India_10Y_Yield"
+"India_CPI"
