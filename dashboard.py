@@ -18,6 +18,7 @@ from scripts.ratioAnalysis import (
 from scripts.macroScrape import run_macro_pipeline
 from scripts.macroAnalysis import Phase2_OLS_Engine
 import plotly.graph_objects as go
+from scripts.ratioAnalysis import fetch_piotroski_f_score, fetch_beneish_m_score
 
 st.set_page_config(
     page_title="Swarm Intelligence Platform",
@@ -507,6 +508,65 @@ elif app_mode == "Single Company Deep Dive":
                     )
                 else:
                     st.write("No tactical data computed.")
+
+            st.markdown("### Structural Integrity & Fraud Detection")
+
+            # 1. Fetch the data from the backend engines (FIX: Use selected_db_ticker)
+            df_piotroski = fetch_piotroski_f_score(selected_db_ticker, engine)
+            df_beneish = fetch_beneish_m_score(selected_db_ticker, engine)
+
+            # 2. Extract the most recent quarter's score safely
+            latest_f_score = (
+                int(df_piotroski.iloc[0]["Piotroski_F_Score"])
+                if not df_piotroski.empty
+                else None
+            )
+            latest_m_score = (
+                float(df_beneish.iloc[0]["Beneish_M_Score"])
+                if not df_beneish.empty
+                else None
+            )
+
+            # 3. Render the HUD Layout
+            hud_col1, hud_col2 = st.columns(2)
+
+            with hud_col1:
+                if latest_f_score is not None:
+                    # Piotroski F-Score Logic (0-9 Scale)
+                    if latest_f_score >= 7:
+                        st.success(
+                            f"Piotroski F-Score: {latest_f_score}/9** \n\nStructurally Sound. High business quality."
+                        )
+                    elif latest_f_score >= 4:
+                        st.warning(
+                            f"Piotroski F-Score: {latest_f_score}/9** \n\nMediocre Quality. Monitor for deterioration."
+                        )
+                    else:
+                        st.error(
+                            f"Piotroski F-Score: {latest_f_score}/9** \n\nCRITICAL VALUE TRAP. Core business is decaying."
+                        )
+                else:
+                    st.info(
+                        "Piotroski F-Score: Insufficient Data or Cash Flow Quarantined."
+                    )
+
+            with hud_col2:
+                if latest_m_score is not None:
+                    # Beneish M-Score Logic (Threshold: -1.78)
+                    if latest_m_score > -1.78:
+                        st.error(
+                            f"Beneish M-Score: {latest_m_score}** \n\nHIGH RISK: Statistical probability of earnings manipulation detected."
+                        )
+                    else:
+                        st.success(
+                            f"Beneish M-Score: {latest_m_score}** \n\nAccounting Clean. Margins and accruals are stable."
+                        )
+                else:
+                    st.info(
+                        "Beneish M-Score: Insufficient Data or Cash Flow Quarantined."
+                    )
+
+            st.markdown("---")
 
             st.divider()
             st.header("OLS Macro Bridge & Forensic Triage")

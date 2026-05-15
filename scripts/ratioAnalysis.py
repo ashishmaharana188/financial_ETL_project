@@ -313,3 +313,183 @@ def fetch_asset_turnover(ticker: str, data_source: str) -> pd.DataFrame:
     return pd.read_sql(
         query, engine, params={"ticker": ticker, "data_source": data_source}
     )
+
+
+def fetch_piotroski_f_score(ticker: str, engine) -> pd.DataFrame:
+    """
+    Calculates the 9-point Piotroski F-Score using YEARLY data for Screener.
+    Compares current year to the previous year (Lag 1).
+    """
+    query = text("""
+        WITH UnifiedData AS (
+            SELECT 
+                i."ReportDate",
+                i."NetIncome",
+                i."GrossProfit",
+                i."TotalRevenue",
+                b."TotalAssets",
+                b."LongTermDebtAndCapitalLeaseObligation" AS long_term_debt,
+                b."CurrentAssets",
+                b."CurrentLiabilities",
+                b."CapitalStock" AS shares_proxy,
+                c."TotalOperatingCashFlow" AS ocf
+            FROM yearly_income_statement i
+            JOIN yearly_balance_sheet b 
+                ON i."Ticker" = b."Ticker" AND i."ReportDate" = b."ReportDate"
+            JOIN yearly_indirect_cash_flow c 
+                ON i."Ticker" = c."Ticker" AND i."ReportDate" = c."ReportDate"
+            WHERE i."Ticker" = :ticker
+              AND c."IsSectionValid" = TRUE  -- THE GATEKEEPER LEAK FILTER
+        ),
+        LaggedData AS (
+            SELECT 
+                "ReportDate",
+                "NetIncome", "TotalAssets", "ocf", "long_term_debt", 
+                "CurrentAssets", "CurrentLiabilities", "shares_proxy",
+                "GrossProfit", "TotalRevenue",
+                
+                -- Lag 1 gets the previous year's data
+                LAG("TotalAssets", 1) OVER (ORDER BY "ReportDate") AS prev_assets,
+                LAG("NetIncome", 1) OVER (ORDER BY "ReportDate") AS prev_ni,
+                LAG("long_term_debt", 1) OVER (ORDER BY "ReportDate") AS prev_debt,
+                LAG("CurrentAssets", 1) OVER (ORDER BY "ReportDate") AS prev_ca,
+                LAG("CurrentLiabilities", 1) OVER (ORDER BY "ReportDate") AS prev_cl,
+                LAG("shares_proxy", 1) OVER (ORDER BY "ReportDate") AS prev_shares,
+                LAG("GrossProfit", 1) OVER (ORDER BY "ReportDate") AS prev_gp,
+                LAG("TotalRevenue", 1) OVER (ORDER BY "ReportDate") AS prev_rev
+            FROM UnifiedData
+        )
+        SELECT 
+            "ReportDate",
+            
+            -- PROFITABILITY
+            CASE WHEN ("NetIncome" / NULLIF(prev_assets, 0)) > 0 THEN 1 ELSE 0 END AS f_roa,
+            CASE WHEN "ocf" > 0 THEN 1 ELSE 0 END AS f_cfo,
+            CASE WHEN ("NetIncome" / NULLIF(prev_assets, 0)) > ("prev_ni" / NULLIF(LAG(prev_assets, 1) OVER (ORDER BY "ReportDate"), 0)) THEN 1 ELSE 0 END AS f_droa,
+            CASE WHEN "ocf" > "NetIncome" THEN 1 ELSE 0 END AS f_accrual,
+            
+            -- LEVERAGE & LIQUIDITY
+            CASE WHEN ("long_term_debt" / NULLIF("TotalAssets", 0)) < ("prev_debt" / NULLIF("prev_assets", 0)) THEN 1 ELSE 0 END AS f_leverage,
+            CASE WHEN ("CurrentAssets" / NULLIF("CurrentLiabilities", 0)) > ("prev_ca" / NULLIF("prev_cl", 0)) THEN 1 ELSE 0 END AS f_liquidity,
+            CASE WHEN "shares_proxy" <= "prev_shares" THEN 1 ELSE 0 END AS f_dilution,
+            
+            -- EFFICIENCY
+            CASE WHEN ("GrossProfit" / NULLIF("TotalRevenue", 0)) > ("prev_gp" / NULLIF("prev_rev", 0)) THEN 1 ELSE 0 END AS f_margin,
+            CASE WHEN ("TotalRevenue" / NULLIF("TotalAssets", 0)) > ("prev_rev" / NULLIF("prev_assets", 0)) THEN 1 ELSE 0 END AS f_turnover
+            
+        FROM LaggedData
+        ORDER BY "ReportDate" DESC;
+    """)
+
+    df = pd.read_sql(query, engine, params={"ticker": ticker})
+    if df.empty:
+        return pd.DataFrame(columns=["ReportDate", "Piotroski_F_Score"])
+
+    score_cols = [
+        "f_roa",
+        "f_cfo",
+        "f_droa",
+        "f_accrual",
+        "f_leverage",
+        "f_liquidity",
+        "f_dilution",
+        "f_margin",
+        "f_turnover",
+    ]
+    df["Piotroski_F_Score"] = df[score_cols].sum(axis=1)
+    return df[["ReportDate", "Piotroski_F_Score"]]
+
+
+def fetch_beneish_m_score(ticker: str, engine) -> pd.DataFrame:
+    """
+    Calculates the 8-variable Beneish M-Score using YEARLY data for Screener.
+    Compares current year to the previous year (Lag 1).
+    """
+    query = text("""
+        WITH UnifiedData AS (
+            SELECT 
+                i."ReportDate",
+                i."TotalRevenue" AS rev,
+                i."GrossProfit" AS gp,
+                i."OperatingExpense" AS sga,
+                i."NetIncome" AS ni,
+                b."Receivables" AS rec,
+                b."CurrentAssets" AS ca,
+                b."CurrentLiabilities" AS cl,
+                b."TotalAssets" AS ta,
+                b."NetPPE" AS ppe,
+                b."LongTermDebtAndCapitalLeaseObligation" AS ltd,
+                c."DepreciationAndAmortization" AS dep,
+                c."TotalOperatingCashFlow" AS ocf
+            FROM yearly_income_statement i
+            JOIN yearly_balance_sheet b 
+                ON i."Ticker" = b."Ticker" AND i."ReportDate" = b."ReportDate"
+            JOIN yearly_indirect_cash_flow c 
+                ON i."Ticker" = c."Ticker" AND i."ReportDate" = c."ReportDate"
+            WHERE i."Ticker" = :ticker
+              AND c."IsSectionValid" = TRUE  -- THE LEAK FILTER
+        ),
+        LaggedData AS (
+            SELECT 
+                "ReportDate", rev, gp, sga, ni, rec, ca, cl, ta, ppe, ltd, dep, ocf,
+                
+                -- Lag 1 for Year-over-Year Comparisons
+                LAG(rev, 1) OVER (ORDER BY "ReportDate") AS prev_rev,
+                LAG(gp, 1) OVER (ORDER BY "ReportDate") AS prev_gp,
+                LAG(sga, 1) OVER (ORDER BY "ReportDate") AS prev_sga,
+                LAG(rec, 1) OVER (ORDER BY "ReportDate") AS prev_rec,
+                LAG(ca, 1) OVER (ORDER BY "ReportDate") AS prev_ca,
+                LAG(cl, 1) OVER (ORDER BY "ReportDate") AS prev_cl,
+                LAG(ta, 1) OVER (ORDER BY "ReportDate") AS prev_ta,
+                LAG(ppe, 1) OVER (ORDER BY "ReportDate") AS prev_ppe,
+                LAG(ltd, 1) OVER (ORDER BY "ReportDate") AS prev_ltd,
+                LAG(dep, 1) OVER (ORDER BY "ReportDate") AS prev_dep
+            FROM UnifiedData
+        ),
+        Indices AS (
+            SELECT 
+                "ReportDate",
+                -- 1. Days Sales in Receivables Index (DSRI)
+                COALESCE((rec / NULLIF(rev, 0)) / NULLIF((prev_rec / NULLIF(prev_rev, 0)), 0), 1) AS dsri,
+                
+                -- 2. Gross Margin Index (GMI)
+                COALESCE((prev_gp / NULLIF(prev_rev, 0)) / NULLIF((gp / NULLIF(rev, 0)), 0), 1) AS gmi,
+                
+                -- 3. Asset Quality Index (AQI)
+                COALESCE((1 - ((ca + ppe) / NULLIF(ta, 0))) / NULLIF((1 - ((prev_ca + prev_ppe) / NULLIF(prev_ta, 0))), 0), 1) AS aqi,
+                
+                -- 4. Sales Growth Index (SGI)
+                COALESCE(rev / NULLIF(prev_rev, 0), 1) AS sgi,
+                
+                -- 5. Depreciation Index (DEPI)
+                COALESCE((prev_dep / NULLIF(prev_dep + prev_ppe, 0)) / NULLIF((dep / NULLIF(dep + ppe, 0)), 0), 1) AS depi,
+                
+                -- 6. SGA Expenses Index (SGAI)
+                COALESCE((sga / NULLIF(rev, 0)) / NULLIF((prev_sga / NULLIF(prev_rev, 0)), 0), 1) AS sgai,
+                
+                -- 7. Leverage Index (LVGI)
+                COALESCE(((cl + ltd) / NULLIF(ta, 0)) / NULLIF(((prev_cl + prev_ltd) / NULLIF(prev_ta, 0)), 0), 1) AS lvgi,
+                
+                -- 8. Total Accruals to Total Assets (TATA)
+                COALESCE((ni - ocf) / NULLIF(ta, 0), 0) AS tata
+                
+            FROM LaggedData
+        )
+        SELECT 
+            "ReportDate",
+            ROUND(CAST(
+                -4.84 
+                + (0.920 * dsri) 
+                + (0.528 * gmi) 
+                + (0.404 * aqi) 
+                + (0.892 * sgi) 
+                + (0.115 * depi) 
+                - (0.172 * sgai) 
+                + (4.679 * tata) 
+                - (0.327 * lvgi) 
+            AS NUMERIC), 3) AS "Beneish_M_Score"
+        FROM Indices
+        ORDER BY "ReportDate" DESC;
+    """)
+
+    return pd.read_sql(query, engine, params={"ticker": ticker})

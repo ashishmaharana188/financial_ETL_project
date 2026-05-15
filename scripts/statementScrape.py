@@ -1373,10 +1373,9 @@ def apply_indirect_cash_flow_fallbacks(
         calc_ocf = df.loc[valid_op].sum()
         ocf_gap = reported_ocf - calc_ocf
         if "OtherWorkingCapitalChanges" in df.index:
-            df.loc["OtherWorkingCapitalChanges"] = (
-                df.loc["OtherWorkingCapitalChanges"].fillna(0)
-                + ocf_gap.where(reported_ocf.notna(), 0).fillna(0)
-            )
+            df.loc["OtherWorkingCapitalChanges"] = df.loc[
+                "OtherWorkingCapitalChanges"
+            ].fillna(0) + ocf_gap.where(reported_ocf.notna(), 0).fillna(0)
         df.loc["TotalOperatingCashFlow"] = reported_ocf.fillna(calc_ocf).fillna(0)
 
     if "TotalInvestingCashFlow" in df.index:
@@ -1390,10 +1389,9 @@ def apply_indirect_cash_flow_fallbacks(
         calc_icf = df.loc[valid_icf].sum()
         icf_gap = reported_icf - calc_icf
         if "OtherInvestingActivities" in df.index:
-            df.loc["OtherInvestingActivities"] = (
-                df.loc["OtherInvestingActivities"].fillna(0)
-                + icf_gap.where(reported_icf.notna(), 0).fillna(0)
-            )
+            df.loc["OtherInvestingActivities"] = df.loc[
+                "OtherInvestingActivities"
+            ].fillna(0) + icf_gap.where(reported_icf.notna(), 0).fillna(0)
         df.loc["TotalInvestingCashFlow"] = reported_icf.fillna(calc_icf).fillna(0)
 
     if "TotalFinancingCashFlow" in df.index:
@@ -1408,10 +1406,9 @@ def apply_indirect_cash_flow_fallbacks(
         calc_fcf = df.loc[valid_fcf].sum()
         fcf_gap = reported_fcf - calc_fcf
         if "OtherFinancingActivities" in df.index:
-            df.loc["OtherFinancingActivities"] = (
-                df.loc["OtherFinancingActivities"].fillna(0)
-                + fcf_gap.where(reported_fcf.notna(), 0).fillna(0)
-            )
+            df.loc["OtherFinancingActivities"] = df.loc[
+                "OtherFinancingActivities"
+            ].fillna(0) + fcf_gap.where(reported_fcf.notna(), 0).fillna(0)
         df.loc["TotalFinancingCashFlow"] = reported_fcf.fillna(calc_fcf).fillna(0)
 
     # --- 4. NET CHANGE IN CASH CALCULATION (Fixes Critical Rollforward Leaks) ---
@@ -1645,6 +1642,44 @@ def validate_financial_statements(
                     print(
                         f"   -> [{date}] CRITICAL ROLLFORWARD LEAK: {leak_val:.2f} (API adjustment {raw_adj.get(date, 0):.2f} failed to reconcile)"
                     )
+
+        df_indirect_cf["IsSectionValid"] = True
+        df_indirect_cf["IsRollforwardValid"] = True
+        df_indirect_cf["TreasuryOpacityRatio"] = 0.0
+
+        for date in df_indirect_cf.index:
+            # Safely get Total Assets for the materiality denominator
+            total_assets = 1.0
+            if date in df_bs.index and pd.notna(df_bs.at[date, "TotalAssets"]):
+                total_assets = abs(df_bs.at[date, "TotalAssets"])
+            if total_assets == 0:
+                total_assets = 1.0  # Prevent Division by Zero
+
+            # Define the 2% Materiality Threshold
+            materiality_limit = total_assets * 0.02
+
+            # Extract absolute leak values
+            op_leak = abs(df_indirect_cf.at[date, "Unmapped_Operating"])
+            inv_leak = abs(df_indirect_cf.at[date, "Unmapped_Investing"])
+            fin_leak = abs(df_indirect_cf.at[date, "Unmapped_Financing"])
+            roll_leak = abs(df_indirect_cf.at[date, "Unmapped_Rollforward"])
+
+            # Section Validation (Quarantine if internal math is broken)
+            if (
+                op_leak > materiality_limit
+                or inv_leak > materiality_limit
+                or fin_leak > materiality_limit
+            ):
+                df_indirect_cf.at[date, "IsSectionValid"] = False
+
+            # Rollforward Validation (Quarantine the overall link)
+            if roll_leak > materiality_limit:
+                df_indirect_cf.at[date, "IsRollforwardValid"] = False
+
+            # Weaponize the Leak
+            df_indirect_cf.at[date, "TreasuryOpacityRatio"] = round(
+                roll_leak / total_assets, 4
+            )
 
         audit_dict.update(
             {
