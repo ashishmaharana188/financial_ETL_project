@@ -2,6 +2,7 @@ import pandas as pd
 from sqlalchemy import text
 from scripts.database import engine
 import yfinance as yf
+import numpy as np
 
 # PHASE 1: STRUCTURAL ANCHORS (YEARLY TABLES)
 
@@ -259,35 +260,34 @@ def fetch_gross_margin(ticker: str, data_source: str) -> pd.DataFrame:
 
 
 def fetch_interest_coverage(ticker: str, data_source: str) -> pd.DataFrame:
-    query = text("""
+
+    table_name = "quarterly_income_statement"
+
+    query = text(f"""
         SELECT 
-            "Ticker", "ReportDate",
-            "OperatingIncome", "NetInterestIncome",
-            
-            -- FIX: Winsorize (Cap) the Coverage Math at 99.99x to protect regression models
+            "ReportDate",
             CASE 
-                WHEN "NetInterestIncome" IS NULL OR "NetInterestIncome" = 0 THEN 99.99
-                WHEN ("OperatingIncome" / NULLIF(ABS("NetInterestIncome"), 0)) > 99.99 THEN 99.99
-                ELSE ROUND("OperatingIncome" / NULLIF(ABS("NetInterestIncome"), 0), 2) 
-            END AS interest_coverage,
-            
-            -- Solvency Triage
-            CASE 
-                WHEN "NetInterestIncome" IS NULL THEN FALSE
-                WHEN "NetInterestIncome" = 0 THEN 
-                    CASE WHEN "OperatingIncome" > 0 THEN TRUE ELSE FALSE END
-                WHEN ("OperatingIncome" / NULLIF(ABS("NetInterestIncome"), 0)) > 1.5 THEN TRUE 
-                ELSE FALSE 
-            END AS swarm_pass_solvency
-            
-        FROM quarterly_income_statement
-        WHERE "Ticker" = :ticker AND "DataSource" = :data_source
-          
-        ORDER BY "ReportDate" DESC;
+                WHEN "NetInterestIncome" = 0 OR "NetInterestIncome" IS NULL THEN 99.99
+                ELSE ABS("OperatingIncome" / "NetInterestIncome")
+            END AS interest_coverage
+        FROM {table_name}
+        WHERE "Ticker" = :ticker
+        ORDER BY "ReportDate" ASC;
     """)
-    return pd.read_sql(
-        query, engine, params={"ticker": ticker, "data_source": data_source}
-    )
+
+    df = pd.read_sql(query, engine, params={"ticker": ticker})
+
+    if not df.empty:
+        # 1. Fill NaNs with 0
+        df["interest_coverage"] = df["interest_coverage"].fillna(0)
+
+        # 2. Clip negative coverage to 0 to prevent Log Math Errors
+        df["interest_coverage"] = df["interest_coverage"].clip(lower=0)
+
+        # 3. Apply the Natural Log Transformation (Log base e of 1 + x)
+        df["interest_coverage"] = np.log1p(df["interest_coverage"])
+
+    return df
 
 
 def fetch_asset_turnover(ticker: str, data_source: str) -> pd.DataFrame:
@@ -313,6 +313,54 @@ def fetch_asset_turnover(ticker: str, data_source: str) -> pd.DataFrame:
     return pd.read_sql(
         query, engine, params={"ticker": ticker, "data_source": data_source}
     )
+
+
+def fetch_revenue_growth_yoy(ticker: str, data_source: str) -> pd.DataFrame:
+    table_name = "quarterly_income_statement"
+
+    # We use LAG to get the previous period's revenue
+    query = text(f"""
+        WITH RevData AS (
+            SELECT 
+                "ReportDate", 
+                "TotalRevenue",
+                LAG("TotalRevenue", 1) OVER (ORDER BY "ReportDate") as prev_revenue
+            FROM {table_name}
+            WHERE "Ticker" = :ticker
+        )
+        SELECT 
+            "ReportDate",
+            CASE 
+                WHEN prev_revenue IS NULL OR prev_revenue = 0 THEN 0 
+                ELSE ("TotalRevenue" - prev_revenue) / prev_revenue 
+            END AS revenue_growth
+        FROM RevData
+        WHERE prev_revenue IS NOT NULL
+        ORDER BY "ReportDate" ASC;
+    """)
+
+    return pd.read_sql(query, engine, params={"ticker": ticker})
+
+
+def fetch_fcf_margin(ticker: str, data_source: str) -> pd.DataFrame:
+    table_name_inc = "yearly_income_statement"
+    table_name_cf = "yearly_indirect_cash_flow"
+
+    query = text(f"""
+        SELECT 
+            i."ReportDate",
+            CASE 
+                WHEN i."TotalRevenue" = 0 OR i."TotalRevenue" IS NULL THEN 0 
+                ELSE ((c."TotalOperatingCashFlow" - ABS(COALESCE(c."CapExPurchaseOfPPE", 0))) / i."TotalRevenue") 
+            END AS fcf_margin
+        FROM {table_name_inc} i
+        JOIN {table_name_cf} c 
+          ON i."Ticker" = c."Ticker" AND i."ReportDate" = c."ReportDate"
+        WHERE i."Ticker" = :ticker
+        ORDER BY i."ReportDate" ASC;
+    """)
+
+    return pd.read_sql(query, engine, params={"ticker": ticker})
 
 
 def fetch_piotroski_f_score(ticker: str, engine) -> pd.DataFrame:

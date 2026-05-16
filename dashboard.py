@@ -14,6 +14,8 @@ from scripts.ratioAnalysis import (
     fetch_gross_margin,
     fetch_interest_coverage,
     fetch_asset_turnover,
+    fetch_revenue_growth_yoy,
+    fetch_fcf_margin,
 )
 from scripts.macroScrape import run_macro_pipeline
 from scripts.macroAnalysis import Phase2_OLS_Engine
@@ -103,7 +105,7 @@ if app_mode == "ETL Control Center":
             "Auto-Rotate (FMP -> Alpha Vantage)",
             "Financial Modeling Prep (FMP)",
             "Alpha Vantage (Strictly US)",
-            "IndianAPI (Strictly India)",  # <--- NEW NATIVE SPIGOT
+            "IndianAPI (Strictly India)",
             "Yahoo Finance",
             "Screener.in",
         ],
@@ -307,6 +309,10 @@ elif app_mode == "Single Company Deep Dive":
             df_gr_margin = fetch_gross_margin(selected_db_ticker, selected_source)
             df_int_cov = fetch_interest_coverage(selected_db_ticker, selected_source)
             df_cfo_pat = fetch_cfo_to_pat(selected_db_ticker, selected_source)
+            df_rev_growth = fetch_revenue_growth_yoy(
+                selected_db_ticker, selected_source
+            )
+            df_fcf_margin = fetch_fcf_margin(selected_db_ticker, selected_source)
 
             # Fetch Phase 1 Gatekeepers
             df_piotroski = fetch_piotroski_f_score(selected_db_ticker, engine)
@@ -335,29 +341,21 @@ elif app_mode == "Single Company Deep Dive":
                     pd.to_datetime(df_turnover["ReportDate"]) > cutoff
                 ]
 
-            # =========================================================
-            # 🟢 THE COMMAND CENTER (TOGGLE UI)
-            # =========================================================
             st.divider()
-            st.markdown("### 🎛️ Dashboard Display Controls")
+            st.markdown("### Dashboard Display Controls")
 
-            toggle_col1, toggle_col2, toggle_col3 = st.columns(3)
+            toggle_col1, toggle_col2 = st.columns(2)
             with toggle_col1:
-                show_convergence = st.toggle("🌐 Master Convergence Chart", value=True)
+                show_convergence = st.toggle("Master Convergence Chart", value=True)
             with toggle_col2:
                 show_fundamentals = st.toggle(
-                    "⚙️ Phase 1: Fundamental Deep Dive", value=False
-                )
-            with toggle_col3:
-                show_macro_ols = st.toggle(
-                    "🌍 Phase 2: Macro & OLS Deep Dive", value=False
+                    "Phase 1: Fundamental Deep Dive", value=False
                 )
 
             st.divider()
 
-            # ---------------------------------------------------------
             # VIEW 1: THE CONVERGENCE CHART (REAL DATA ONLY)
-            # ---------------------------------------------------------
+
             if show_convergence:
                 st.markdown("### Capital Efficiency & Structural Health Overlay")
                 st.caption(
@@ -437,11 +435,11 @@ elif app_mode == "Single Company Deep Dive":
                     latest_m_score = float(df_beneish.iloc[0]["Beneish_M_Score"])
                     if latest_m_score > -1.78:
                         st.error(
-                            f"🚨 **Beneish M-Score Warning: {latest_m_score}** - Statistical probability of earnings manipulation detected."
+                            f"Beneish M-Score Warning: {latest_m_score} - Statistical probability of earnings manipulation detected."
                         )
                     else:
                         st.success(
-                            f"✅ **Beneish M-Score: {latest_m_score}** - Accounting appears clean."
+                            f"Beneish M-Score: {latest_m_score} - Accounting appears clean."
                         )
 
                 st.subheader("Structural Anchors")
@@ -607,64 +605,7 @@ elif app_mode == "Single Company Deep Dive":
                             p2_merged.sort_values(by="ReportDate", ascending=False),
                             use_container_width=True,
                         )
-
-            # ---------------------------------------------------------
-            # VIEW 3: MACRO & OLS (Phase 2 Deep Dive)
-            # ---------------------------------------------------------
-            if show_macro_ols:
-                st.markdown("### External Macro Environment")
-
-                # --- NEW: ENGINE 2 (MACRO MOMENTUM TRACKER) ---
-                st.header("Engine 2: Macro Momentum & Regime Shifts")
-                st.caption(
-                    "Live 5-Year Z-Score evaluation of global macro velocity and acceleration."
-                )
-
-                try:
-                    macro_query = text(
-                        'SELECT "ReportDate", "IndicatorName", "Value" FROM macro_indicators'
-                    )
-                    macro_raw = pd.read_sql(macro_query, engine)
-                    macro_df = macro_raw.pivot(
-                        index="ReportDate", columns="IndicatorName", values="Value"
-                    )
-                    macro_df.index = pd.to_datetime(macro_df.index)
-                except Exception as e:
-                    st.error(f"Failed to load Macro Database: {e}")
-                    macro_df = pd.DataFrame()
-
-                if not macro_df.empty:
-                    # Instantiate Engine 2
-                    tracker = MacroMomentumTracker(macro_df)
-                    signals = tracker.get_latest_regime_signals()
-
-                    # Render the Z-Scores dynamically based on how many macro variables exist
-                    if signals:
-                        sig_cols = st.columns(len(signals))
-                        for i, (indicator, data) in enumerate(signals.items()):
-                            with sig_cols[i]:
-                                z_val = data["Z_Score"]
-                                status = data["Status"]
-
-                                if z_val is not None:
-                                    if z_val >= 2.0:
-                                        st.error(
-                                            f"🚨 **{indicator}**\n\nZ-Score: {z_val}\n\n*{status}*"
-                                        )
-                                    elif z_val <= -2.0:
-                                        st.success(
-                                            f"✅ **{indicator}**\n\nZ-Score: {z_val}\n\n*{status}*"
-                                        )
-                                    else:
-                                        st.info(
-                                            f"📊 **{indicator}**\n\nZ-Score: {z_val}\n\n*{status}*"
-                                        )
-                                else:
-                                    st.warning(
-                                        f"**{indicator}**\n\nInsufficient Data (<60 Mo)"
-                                    )
-                st.divider()
-
+                ###
                 st.header("OLS Macro Bridge & Forensic Triage")
                 try:
                     macro_query = text(
@@ -681,18 +622,23 @@ elif app_mode == "Single Company Deep Dive":
 
                 if not macro_df.empty:
                     target_options = {
-                        "Operating Margin (Primary Bridge)": (
+                        "Operating Margin (Pricing Power)": (
                             "operating_margin",
                             df_op_margin,
                         ),
-                        "Gross Margin (Anchor)": ("gross_margin", df_gr_margin),
+                        "Gross Margin (Anchor Cost)": ("gross_margin", df_gr_margin),
                         "Interest Coverage (Solvency)": (
                             "interest_coverage",
                             df_int_cov,
                         ),
-                        "Asset Turnover (Productivity)": (
+                        "Asset Turnover (Capital Efficiency)": (
                             "asset_turnover",
                             df_turnover,
+                        ),
+                        "FCF Margin (Cash Conversion)": ("fcf_margin", df_fcf_margin),
+                        "Revenue Growth YoY (Macro Demand)": (
+                            "revenue_growth",
+                            df_rev_growth,
                         ),
                     }
                     selected_pillar_label = st.selectbox(
@@ -701,6 +647,11 @@ elif app_mode == "Single Company Deep Dive":
                     target_col, target_df = target_options[selected_pillar_label]
 
                     if not target_df.empty:
+
+                        # --- ENGINE 2: GET Z-SCORES FOR DUMMY TRACES LATER ---
+                        tracker = MacroMomentumTracker(macro_df)
+                        signals = tracker.get_latest_regime_signals()
+
                         ols_engine = Phase2_OLS_Engine(macro_df, target_df)
                         initial_payload = ols_engine.run_static_baseline(
                             target_col, sector=company_sector, industry=company_industry
@@ -746,6 +697,14 @@ elif app_mode == "Single Company Deep Dive":
                                 and len(custom_macro_selection) == 3
                                 and set(custom_macro_selection) != set(default_beams)
                             ):
+                                clean_payload = ols_engine.run_static_baseline(
+                                    target_col,
+                                    sector=company_sector,
+                                    industry=company_industry,
+                                    custom_beams=custom_macro_selection,
+                                )
+                                if "error" not in clean_payload:
+                                    initial_payload = clean_payload
                                 init_tl = initial_payload["timeline_data"]
 
                             system_outliers = [
@@ -811,6 +770,8 @@ elif app_mode == "Single Company Deep Dive":
                             )
 
                             fig_line = go.Figure()
+
+                            # 1. ACTUAL CHART TRACES
                             fig_line.add_trace(
                                 go.Scatter(
                                     x=clean_tl["dates"] + clean_tl["dates"][::-1],
@@ -917,17 +878,54 @@ elif app_mode == "Single Company Deep Dive":
                                     )
                                 )
 
+                            # 2. ENGINE 2 DUMMY TRACES FOR NATIVE LEGEND
+                            if signals:
+                                # Add an invisible spacer title in the legend
+                                fig_line.add_trace(
+                                    go.Scatter(
+                                        x=[None],
+                                        y=[None],
+                                        mode="markers",
+                                        marker=dict(color="rgba(0,0,0,0)"),
+                                        name="<b>-- MACRO RADAR --</b>",
+                                        hoverinfo="skip",
+                                    )
+                                )
+
+                                for indicator, data in signals.items():
+                                    z_val = data["Z_Score"]
+                                    if z_val is None:
+                                        trace_name = f"⚪ {indicator}: N/A"
+                                        dot_color = "gray"
+                                    elif z_val >= 2.0 or z_val <= -2.0:
+                                        trace_name = f"🚨 {indicator}: {z_val}"
+                                        dot_color = "#FF4B4B"  # Red
+                                    else:
+                                        trace_name = f"🟢 {indicator}: {z_val}"
+                                        dot_color = "#00FFAA"  # Green
+
+                                    fig_line.add_trace(
+                                        go.Scatter(
+                                            x=[None],
+                                            y=[None],  # Invisible on the chart
+                                            mode="markers",
+                                            marker=dict(color=dot_color, size=10),
+                                            name=trace_name,
+                                            hoverinfo="skip",
+                                        )
+                                    )
+
                             fig_line.update_layout(
                                 margin=dict(l=0, r=0, t=30, b=0),
                                 plot_bgcolor="rgba(0,0,0,0)",
                                 paper_bgcolor="rgba(0,0,0,0)",
                             )
+
                             st.plotly_chart(
                                 fig_line,
                                 use_container_width=True,
                                 key=f"chart_{target_col}",
                             )
-
                             if (
                                 "phantom_dot" in final_payload
                                 and final_payload["phantom_dot"]
@@ -1000,11 +998,11 @@ elif app_mode == "Single Company Deep Dive":
                                 "View Mathematical DNA (Alpha Moat & Betas)"
                             ):
                                 st.markdown(
-                                    f"**Alpha (Structural Moat):** `{final_payload['alpha_moat']}`"
+                                    f"Alpha (Structural Moat): `{final_payload['alpha_moat']}`"
                                 )
-                                st.write("**Beta Sensitivities:**")
+                                st.write("Beta Sensitivities:")
                                 st.json(final_payload["betas"])
-                                st.write("**P-Values (Statistical Significance):**")
+                                st.write("P-Values (Statistical Significance):")
                                 st.json(final_payload["p_values"])
                 else:
                     st.info(
