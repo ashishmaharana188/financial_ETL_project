@@ -19,13 +19,14 @@ from scripts.macroScrape import run_macro_pipeline
 from scripts.macroAnalysis import Phase2_OLS_Engine
 import plotly.graph_objects as go
 from scripts.ratioAnalysis import fetch_piotroski_f_score, fetch_beneish_m_score
+from plotly.subplots import make_subplots
+from scripts.macroAnalysis import Phase2_OLS_Engine, MacroMomentumTracker
 
 st.set_page_config(
     page_title="Swarm Intelligence Platform",
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
 
 st.sidebar.title("Swarm Intelligence")
 st.sidebar.markdown("Institutional Quantitative Platform")
@@ -272,7 +273,6 @@ elif app_mode == "Single Company Deep Dive":
                     if break_date_res and len(break_date_res) > 1
                     else "DEFAULT"
                 )
-                # Fetch the highly specific industry
                 company_industry = (
                     break_date_res[2]
                     if break_date_res and len(break_date_res) > 2
@@ -296,31 +296,29 @@ elif app_mode == "Single Company Deep Dive":
         with st.spinner(
             f"Running Forensic Scan for {selected_db_ticker} using {selected_source.upper()} data..."
         ):
-            # Fetch Phase 1: Structural Anchors (Strictly Isolated)
+            # Fetch Phase 1 & 2 Math
             df_roic = fetch_roic(selected_db_ticker, selected_source)
             df_fcf = fetch_fcf_yield(selected_db_ticker, selected_source)
             df_de = fetch_debt_to_equity(selected_db_ticker, selected_source)
             df_ccc = fetch_ccc(selected_db_ticker, selected_source)
             df_dol = fetch_dol(selected_db_ticker, selected_source)
             df_turnover = fetch_asset_turnover(selected_db_ticker, selected_source)
-
-            # Fetch Phase 2: Tactical Responders (Strictly Isolated)
             df_op_margin = fetch_operating_margin(selected_db_ticker, selected_source)
             df_gr_margin = fetch_gross_margin(selected_db_ticker, selected_source)
             df_int_cov = fetch_interest_coverage(selected_db_ticker, selected_source)
             df_cfo_pat = fetch_cfo_to_pat(selected_db_ticker, selected_source)
 
+            # Fetch Phase 1 Gatekeepers
+            df_piotroski = fetch_piotroski_f_score(selected_db_ticker, engine)
+            df_beneish = fetch_beneish_m_score(selected_db_ticker, engine)
+
             if "Predictive" in view_mode and edgar_break_date:
                 cutoff = pd.to_datetime(edgar_break_date)
-
-                # Apply to Phase 1
                 df_roic = df_roic[pd.to_datetime(df_roic["ReportDate"]) > cutoff]
                 df_fcf = df_fcf[pd.to_datetime(df_fcf["ReportDate"]) > cutoff]
                 df_de = df_de[pd.to_datetime(df_de["ReportDate"]) > cutoff]
                 df_ccc = df_ccc[pd.to_datetime(df_ccc["ReportDate"]) > cutoff]
                 df_dol = df_dol[pd.to_datetime(df_dol["ReportDate"]) > cutoff]
-
-                # Apply to Phase 2
                 df_op_margin = df_op_margin[
                     pd.to_datetime(df_op_margin["ReportDate"]) > cutoff
                 ]
@@ -337,628 +335,681 @@ elif app_mode == "Single Company Deep Dive":
                     pd.to_datetime(df_turnover["ReportDate"]) > cutoff
                 ]
 
-            # --- TOP LEVEL: STRUCTURAL HEALTH (PHASE 1) ---
+            # =========================================================
+            # 🟢 THE COMMAND CENTER (TOGGLE UI)
+            # =========================================================
             st.divider()
-            st.subheader("Structural Anchors")
-            st.caption("Long-term capital efficiency and survival metrics.")
+            st.markdown("### 🎛️ Dashboard Display Controls")
 
-            yc1, yc2, yc3, yc4, yc5, yc6 = st.columns(6)
-            with yc1:
-                latest_roic = (
-                    df_roic["roic"].iloc[0] * 100
-                    if not df_roic.empty and pd.notnull(df_roic["roic"].iloc[0])
-                    else 0
+            toggle_col1, toggle_col2, toggle_col3 = st.columns(3)
+            with toggle_col1:
+                show_convergence = st.toggle("🌐 Master Convergence Chart", value=True)
+            with toggle_col2:
+                show_fundamentals = st.toggle(
+                    "⚙️ Phase 1: Fundamental Deep Dive", value=False
                 )
-                st.metric("ROIC", f"{latest_roic:.2f}%")
-            with yc2:
-                latest_fcf = (
-                    df_fcf["FCF_Yield"].iloc[0] * 100
-                    if not df_fcf.empty
-                    and pd.notnull(df_fcf.get("FCF_Yield", pd.Series([None])).iloc[0])
-                    else 0
+            with toggle_col3:
+                show_macro_ols = st.toggle(
+                    "🌍 Phase 2: Macro & OLS Deep Dive", value=False
                 )
-                st.metric("FCF Yield", f"{latest_fcf:.2f}%")
-            with yc3:
-                latest_de = (
-                    df_de["debt_to_equity"].iloc[0]
-                    if not df_de.empty and pd.notnull(df_de["debt_to_equity"].iloc[0])
-                    else 0
-                )
-                st.metric("Debt / Equity", f"{latest_de:.2f}")
-            with yc4:
-                latest_ccc = (
-                    df_ccc["cash_conversion_cycle"].iloc[0]
-                    if not df_ccc.empty
-                    and pd.notnull(df_ccc["cash_conversion_cycle"].iloc[0])
-                    else 0
-                )
-                st.metric("Cash Conv. Cycle", f"{latest_ccc:.0f} Days")
-            with yc5:
-                latest_dol = (
-                    df_dol["degree_of_operating_leverage"].iloc[0]
-                    if not df_dol.empty
-                    and pd.notnull(df_dol["degree_of_operating_leverage"].iloc[0])
-                    else 0
-                )
-                st.metric("Op. Leverage (DOL)", f"{latest_dol:.2f}x")
-            with yc6:
-                latest_turnover = (
-                    df_turnover["asset_turnover"].iloc[0]
-                    if not df_turnover.empty
-                    and pd.notnull(df_turnover["asset_turnover"].iloc[0])
-                    else 0
-                )
-                st.metric("Asset Turnover", f"{latest_turnover:.2f}x")
-
-            # --- MIDDLE LEVEL: TACTICAL RESPONDERS (PHASE 2) ---
-            st.divider()
-            st.subheader("Phase 2: Tactical Responders")
-            st.caption("Immediate shock absorbers for macro weather impacts.")
-
-            qc1, qc2, qc3, qc4 = st.columns(4)
-            with qc1:
-                latest_op_margin = (
-                    df_op_margin["operating_margin"].iloc[0] * 100
-                    if not df_op_margin.empty
-                    and pd.notnull(df_op_margin["operating_margin"].iloc[0])
-                    else 0
-                )
-                st.metric("Operating Margin", f"{latest_op_margin:.2f}%")
-            with qc2:
-                latest_gr_margin = (
-                    df_gr_margin["gross_margin"].iloc[0] * 100
-                    if not df_gr_margin.empty
-                    and pd.notnull(df_gr_margin["gross_margin"].iloc[0])
-                    else 0
-                )
-                st.metric("Gross Margin", f"{latest_gr_margin:.2f}%")
-            with qc3:
-                latest_int_cov = (
-                    df_int_cov["interest_coverage"].iloc[0]
-                    if not df_int_cov.empty
-                    and pd.notnull(df_int_cov["interest_coverage"].iloc[0])
-                    else 0
-                )
-                st.metric("Interest Coverage", f"{latest_int_cov:.2f}x")
-            with qc4:
-                latest_cfo_pat = (
-                    df_cfo_pat["cfo_to_pat"].iloc[0]
-                    if not df_cfo_pat.empty
-                    and pd.notnull(df_cfo_pat["cfo_to_pat"].iloc[0])
-                    else 0
-                )
-                st.metric("CFO / PAT", f"{latest_cfo_pat:.2f}")
-
-            # --- BOTTOM LEVEL: RAW DATA ROOM ---
-            st.divider()
-            st.subheader("Data Room")
-
-            with st.expander("View Raw Structural Matrices (Phase 1)"):
-                if not df_roic.empty:
-                    p1_merged = df_roic[["ReportDate", "roic"]]
-                    if not df_fcf.empty:
-                        p1_merged = pd.merge(
-                            p1_merged,
-                            df_fcf[["ReportDate", "FCF_Yield"]],
-                            on="ReportDate",
-                            how="outer",
-                        )
-                    if not df_de.empty:
-                        p1_merged = pd.merge(
-                            p1_merged,
-                            df_de[["ReportDate", "debt_to_equity"]],
-                            on="ReportDate",
-                            how="outer",
-                        )
-                    if not df_ccc.empty:
-                        p1_merged = pd.merge(
-                            p1_merged,
-                            df_ccc[["ReportDate", "cash_conversion_cycle"]],
-                            on="ReportDate",
-                            how="outer",
-                        )
-                    if not df_dol.empty:
-                        p1_merged = pd.merge(
-                            p1_merged,
-                            df_dol[["ReportDate", "degree_of_operating_leverage"]],
-                            on="ReportDate",
-                            how="outer",
-                        )
-                    if not df_turnover.empty:
-                        p1_merged = pd.merge(
-                            p1_merged,
-                            df_turnover[["ReportDate", "asset_turnover"]],
-                            on="ReportDate",
-                            how="outer",
-                        )
-                    st.dataframe(
-                        p1_merged.sort_values(by="ReportDate", ascending=False),
-                        use_container_width=True,
-                    )
-                else:
-                    st.write("No structural data computed.")
-
-            with st.expander("View Raw Tactical Matrices (Phase 2)"):
-                if not df_op_margin.empty:
-                    p2_merged = df_op_margin[["ReportDate", "operating_margin"]]
-                    if not df_gr_margin.empty:
-                        p2_merged = pd.merge(
-                            p2_merged,
-                            df_gr_margin[["ReportDate", "gross_margin"]],
-                            on="ReportDate",
-                            how="outer",
-                        )
-                    if not df_int_cov.empty:
-                        p2_merged = pd.merge(
-                            p2_merged,
-                            df_int_cov[["ReportDate", "interest_coverage"]],
-                            on="ReportDate",
-                            how="outer",
-                        )
-                    if not df_cfo_pat.empty:
-                        p2_merged = pd.merge(
-                            p2_merged,
-                            df_cfo_pat[["ReportDate", "cfo_to_pat"]],
-                            on="ReportDate",
-                            how="outer",
-                        )
-                    st.dataframe(
-                        p2_merged.sort_values(by="ReportDate", ascending=False),
-                        use_container_width=True,
-                    )
-                else:
-                    st.write("No tactical data computed.")
-
-            st.markdown("### Structural Integrity & Fraud Detection")
-
-            # 1. Fetch the data from the backend engines (FIX: Use selected_db_ticker)
-            df_piotroski = fetch_piotroski_f_score(selected_db_ticker, engine)
-            df_beneish = fetch_beneish_m_score(selected_db_ticker, engine)
-
-            # 2. Extract the most recent quarter's score safely
-            latest_f_score = (
-                int(df_piotroski.iloc[0]["Piotroski_F_Score"])
-                if not df_piotroski.empty
-                else None
-            )
-            latest_m_score = (
-                float(df_beneish.iloc[0]["Beneish_M_Score"])
-                if not df_beneish.empty
-                else None
-            )
-
-            # 3. Render the HUD Layout
-            hud_col1, hud_col2 = st.columns(2)
-
-            with hud_col1:
-                if latest_f_score is not None:
-                    # Piotroski F-Score Logic (0-9 Scale)
-                    if latest_f_score >= 7:
-                        st.success(
-                            f"Piotroski F-Score: {latest_f_score}/9** \n\nStructurally Sound. High business quality."
-                        )
-                    elif latest_f_score >= 4:
-                        st.warning(
-                            f"Piotroski F-Score: {latest_f_score}/9** \n\nMediocre Quality. Monitor for deterioration."
-                        )
-                    else:
-                        st.error(
-                            f"Piotroski F-Score: {latest_f_score}/9** \n\nCRITICAL VALUE TRAP. Core business is decaying."
-                        )
-                else:
-                    st.info(
-                        "Piotroski F-Score: Insufficient Data or Cash Flow Quarantined."
-                    )
-
-            with hud_col2:
-                if latest_m_score is not None:
-                    # Beneish M-Score Logic (Threshold: -1.78)
-                    if latest_m_score > -1.78:
-                        st.error(
-                            f"Beneish M-Score: {latest_m_score}** \n\nHIGH RISK: Statistical probability of earnings manipulation detected."
-                        )
-                    else:
-                        st.success(
-                            f"Beneish M-Score: {latest_m_score}** \n\nAccounting Clean. Margins and accruals are stable."
-                        )
-                else:
-                    st.info(
-                        "Beneish M-Score: Insufficient Data or Cash Flow Quarantined."
-                    )
-
-            st.markdown("---")
 
             st.divider()
-            st.header("OLS Macro Bridge & Forensic Triage")
 
-            # 1. Fetch and format the live Macro Spigot data from DB
-            try:
-                macro_query = text(
-                    'SELECT "ReportDate", "IndicatorName", "Value" FROM macro_indicators'
-                )
-                macro_raw = pd.read_sql(macro_query, engine)
-                macro_df = macro_raw.pivot(
-                    index="ReportDate", columns="IndicatorName", values="Value"
-                )
-                macro_df.index = pd.to_datetime(macro_df.index)
-            except Exception as e:
-                st.error(f"Failed to load Macro Database: {e}")
-                macro_df = pd.DataFrame()
-
-            if not macro_df.empty:
-                # 2. UI Selector for the Target Pillar (UPDATED VARIABLE NAMES HERE)
-                target_options = {
-                    "Operating Margin (Primary Bridge)": (
-                        "operating_margin",
-                        df_op_margin,
-                    ),
-                    "Gross Margin (Anchor)": ("gross_margin", df_gr_margin),
-                    "Interest Coverage (Solvency)": ("interest_coverage", df_int_cov),
-                    "Asset Turnover (Productivity)": ("asset_turnover", df_turnover),
-                }
-                selected_pillar_label = st.selectbox(
-                    "Select Micro Pillar to Validate:", list(target_options.keys())
-                )
-                target_col, target_df = target_options[selected_pillar_label]
-
-            if not target_df.empty:
-                # 3. Instantiate the Black Box Engine
-                ols_engine = Phase2_OLS_Engine(macro_df, target_df)
-
-                # 1. Fetch the Initial Baseline (Pass the Sector for Smart Defaults)
-                initial_payload = ols_engine.run_static_baseline(
-                    target_col, sector=company_sector, industry=company_industry
+            # ---------------------------------------------------------
+            # VIEW 1: THE CONVERGENCE CHART (REAL DATA ONLY)
+            # ---------------------------------------------------------
+            if show_convergence:
+                st.markdown("### Capital Efficiency & Structural Health Overlay")
+                st.caption(
+                    "Overlaying the company's Return on Invested Capital (ROIC) against its Piotroski Health Score to spot business decay."
                 )
 
-                if "error" in initial_payload:
-                    st.warning(
-                        f"Could not process {target_col}: {initial_payload['error']}"
+                if not df_piotroski.empty and not df_roic.empty:
+                    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+                    # Sort data chronologically
+                    df_p_plot = df_piotroski.sort_values("ReportDate")
+                    df_r_plot = df_roic.sort_values("ReportDate")
+
+                    # Trace 1: ROIC (Real Phase 1 Data)
+                    fig.add_trace(
+                        go.Scatter(
+                            x=df_r_plot["ReportDate"],
+                            y=df_r_plot["roic"] * 100,
+                            name="ROIC (%)",
+                            line=dict(color="#2E86C1", width=3),
+                        ),
+                        secondary_y=False,
                     )
-                else:
-                    init_tl = initial_payload["timeline_data"]
 
-                    # --- UI NOTIFICATION & MACRO SANDBOX ---
-                    n_quarters = len(init_tl["dates"])
-                    custom_macro_selection = None
-
-                    if 12 <= n_quarters < 24:
-                        active_beams = list(initial_payload["betas"].keys())
-                        st.info(
-                            f"💡 Limited Data Detected (N={n_quarters}). Engine auto-loaded the **{company_sector}** macro template: `{active_beams}`"
+                    # Trace 2: Piotroski Score Overlay (Real Phase 1 Data)
+                    colors = [
+                        (
+                            "#27AE60"
+                            if score >= 7
+                            else "#F1C40F" if score >= 4 else "#C0392B"
                         )
-
-                        # The full list of 8 beams the user can choose from
-                        all_beams = [
-                            "Brent_Crude",
-                            "USD_INR",
-                            "Broad_Commodity",
-                            "US_Dollar_Index_3M",
-                            "India_CPI_3M",
-                            "India_10Y_Yield_6M",
-                            "US_10Y_Yield_6M",
-                            "Yield_Spread_6M",
-                        ]
-
-                        default_beams = [b for b in active_beams if b in all_beams]
-
-                        # The Interactive Multiselect
-                        custom_macro_selection = st.multiselect(
-                            "Override Macro Template (Select exactly 3):",
-                            options=all_beams,
-                            default=default_beams,
-                            max_selections=3,
-                            key=f"macro_override_{target_col}",
-                        )
-
-                        # If the user manually changes the beams, instantly recalculate the baseline!
-                    if (
-                        custom_macro_selection is not None
-                        and len(custom_macro_selection) == 3
-                        and set(custom_macro_selection) != set(default_beams)
-                    ):
-                        init_tl = initial_payload["timeline_data"]
-                    # -----------------------------------------------
-
-                    # Identify exactly which dates triggered the Cook's alarm
-                    system_outliers = [
-                        date
-                        for date, is_out in zip(init_tl["dates"], init_tl["is_outlier"])
-                        if is_out
+                        for score in df_p_plot["Piotroski_F_Score"]
                     ]
 
-                    # --- OUTLIER CONTROL CENTER ---
-                    st.markdown("### Outlier Control Center")
-
-                    if system_outliers:
-                        st.warning(
-                            f"System detected {len(system_outliers)} mathematical anomalies: {', '.join(system_outliers)}"
-                        )
-                    else:
-                        st.success(" No mathematical anomalies detected.")
-
-                    # The 3-Way Interactive Toggle
-                    handling_mode = st.radio(
-                        "Select Outlier Handling Strategy:",
-                        [
-                            "Include All Data",
-                            "Exclude System-Detected Outliers",
-                            "Custom Manual Selection",
-                        ],
-                        horizontal=True,
-                        key=f"radio_outlier_{target_col}",
+                    fig.add_trace(
+                        go.Bar(
+                            x=df_p_plot["ReportDate"],
+                            y=df_p_plot["Piotroski_F_Score"],
+                            name="Piotroski Score (0-9)",
+                            marker_color=colors,
+                            opacity=0.4,
+                        ),
+                        secondary_y=True,
                     )
 
-                    # Logic to capture human selection
-                    final_exclusions = []
-                    if handling_mode == "Exclude System-Detected Outliers":
-                        final_exclusions = system_outliers
-                    elif handling_mode == "Custom Manual Selection":
-                        final_exclusions = st.multiselect(
-                            "Select specific quarters to drop from the model:",
-                            options=init_tl["dates"],
-                            default=system_outliers,
-                            key=f"multi_{target_col}",
-                        )
-
-                        # 2. Recalculate the Math based on Human Input (Passing custom beams if active)
-                    if final_exclusions:
-                        clean_payload = ols_engine.run_static_baseline(
-                            target_col,
-                            sector=company_sector,
-                            industry=company_industry,
-                            excluded_dates=final_exclusions,
-                            custom_beams=custom_macro_selection,
-                        )
-                        if "error" in clean_payload:
-                            clean_payload = initial_payload
-                    else:
-                        clean_payload = initial_payload
-
-                    clean_tl = clean_payload["timeline_data"]
-                    final_payload = clean_payload
-
-                    # --- RESTORED R-SQUARED METRIC ---
-                    st.metric(
-                        "Bridge Strength (R-Squared)",
-                        f"{final_payload['r_squared']*100:.1f}%",
-                        help="Measures how much of the company's variance is mathematically explained by the 8 Macro Beams.",
-                    )
-                    st.divider()
-                    st.markdown(f"### The Bridge: {target_col} Actual vs. Predicted")
-
-                    fig_line = go.Figure()
-
-                    # 1. Tolerance Bands
-                    fig_line.add_trace(
-                        go.Scatter(
-                            x=clean_tl["dates"] + clean_tl["dates"][::-1],
-                            y=clean_tl["conf_upper"] + clean_tl["conf_lower"][::-1],
-                            fill="toself",
-                            fillcolor="rgba(128,128,128,0.2)",
-                            line=dict(color="rgba(255,255,255,0)"),
-                            name="95% Tolerance",
-                            hoverinfo="skip",
-                        )
-                    )
-
-                    # 2. Split Actuals into "Normal" and "Detected Outliers" for coloring
-                    normal_x, normal_y = [], []
-                    outlier_x, outlier_y = [], []
-
-                    for i in range(len(init_tl["dates"])):
-                        if (
-                            init_tl["is_outlier"][i]
-                            or init_tl["dates"][i] in final_exclusions
-                        ):
-                            outlier_x.append(init_tl["dates"][i])
-                            outlier_y.append(init_tl["actual_y"][i])
-                        else:
-                            normal_x.append(init_tl["dates"][i])
-                            normal_y.append(init_tl["actual_y"][i])
-
-                    # --- RESTORED: THE ACTUAL LINE GRAPH ---
-                    fig_line.add_trace(
-                        go.Scatter(
-                            x=init_tl["dates"],
-                            y=init_tl["actual_y"],
-                            mode="lines",
-                            name="Actual Trendline",
-                            line=dict(color="#FF4B4B", width=2),
-                            hoverinfo="skip",
-                        )
-                    )
-                    # ---------------------------------------
-
-                    # Plot Normal Data (Red Dots)
-                    fig_line.add_trace(
-                        go.Scatter(
-                            x=normal_x,
-                            y=normal_y,
-                            mode="markers",
-                            name="Normal Quarter",
-                            marker=dict(color="#FF4B4B", size=8),
-                        )
-                    )
-
-                    # Plot Anomalies (Large Yellow Dots)
-                    fig_line.add_trace(
-                        go.Scatter(
-                            x=outlier_x,
-                            y=outlier_y,
-                            mode="markers",
-                            name="Flagged Outlier",
-                            marker=dict(
-                                color="#FFC107",
-                                size=12,
-                                line=dict(color="red", width=2),
-                            ),
-                            hovertemplate="<b>%{x}</b><br>Outlier Value: %{y}<extra></extra>",
-                        )
-                    )
-
-                    # 3. Add OLS Predicted Line (Uses Cleaned Data)
-                    fig_line.add_trace(
-                        go.Scatter(
-                            x=clean_tl["dates"],
-                            y=clean_tl["predicted_y"],
-                            mode="lines",
-                            name="OLS Predicted",
-                            line=dict(color="#0068C9", dash="dash", width=2),
-                            connectgaps=True,
-                        )
-                    )
-
-                    # --- NEW: STEP 4 THE PHANTOM DOT ---
-                    if "phantom_dot" in final_payload and final_payload["phantom_dot"]:
-                        phantom = final_payload["phantom_dot"]
-
-                        # Connect the last OLS point to the Phantom Dot with a forward-looking dotted line
-                        fig_line.add_trace(
-                            go.Scatter(
-                                x=[clean_tl["dates"][-1], phantom["target_date"]],
-                                y=[
-                                    clean_tl["predicted_y"][-1],
-                                    phantom["predicted_value"],
-                                ],
-                                mode="lines",
-                                name="Forward Trajectory",
-                                line=dict(color="#00FFAA", dash="dot", width=2),
-                                showlegend=False,
-                                hoverinfo="skip",
-                            )
-                        )
-
-                        # Draw the Ghost Dot
-                        fig_line.add_trace(
-                            go.Scatter(
-                                x=[phantom["target_date"]],
-                                y=[phantom["predicted_value"]],
-                                mode="markers",
-                                name="Phantom Predictor (Next Qtr)",
-                                marker=dict(
-                                    color="rgba(0,0,0,0)",  # Transparent fill (Ghost dot)
-                                    size=14,
-                                    line=dict(
-                                        color="#00FFAA", width=3
-                                    ),  # Bright neon border
-                                ),
-                                hovertemplate="<b>Projected: %{x}</b><br>Value: %{y}<extra></extra>",
-                            )
-                        )
-                    # -----------------------------------
-
-                    try:
-                        if "Audit" in view_mode and edgar_break_date:
-                            break_dt = str(edgar_break_date)
-                            fig_line.add_vline(
-                                x=break_dt, line_dash="dash", line_color="white"
-                            )
-                            fig_line.add_annotation(
-                                x=break_dt,
-                                y=1,
-                                yref="paper",
-                                text=" SEC Corporate Action",
-                                showarrow=False,
-                                xanchor="left",
-                                yanchor="top",
-                                font=dict(color="white", size=11),
-                            )
-                    except NameError:
-                        pass
-
-                    fig_line.update_layout(
-                        margin=dict(l=0, r=0, t=30, b=0),
-                        plot_bgcolor="rgba(0,0,0,0)",
-                        paper_bgcolor="rgba(0,0,0,0)",
-                    )
-                    st.plotly_chart(
-                        fig_line,
-                        use_container_width=True,
-                        key=f"chart_{target_col}",
-                    )
-
-                    # --- NEW: PHANTOM PREDICTOR UI CALLOUT ---
-                    if "phantom_dot" in final_payload and final_payload["phantom_dot"]:
-                        phantom = final_payload["phantom_dot"]
-                        st.success(
-                            f"Based on live trailing 90-day macro data, the engine projects the target metric to hit **{phantom['predicted_value']:.4f}** for the upcoming unreleased quarter ending **{phantom['target_date']}**."
-                        )
-
-                    # ---  ADD THE DATA TABLE VIEWER BACK ---
-                    with st.expander("View Underlying Numerical Data"):
-                        chart_df = pd.DataFrame(
-                            {
-                                "ReportDate": clean_tl["dates"],
-                                "Actual Reported": [
-                                    round(val, 4) for val in clean_tl["actual_y"]
-                                ],
-                                "OLS Predicted": [
-                                    round(val, 4) for val in clean_tl["predicted_y"]
-                                ],
-                                "Upper Tolerance Band": [
-                                    round(val, 4) for val in clean_tl["conf_upper"]
-                                ],
-                                "Lower Tolerance Band": [
-                                    round(val, 4) for val in clean_tl["conf_lower"]
-                                ],
-                            }
-                        ).set_index("ReportDate")
-
-                        st.dataframe(chart_df, use_container_width=True)
-                    # -------------------------------------------
-                    st.markdown("#### Residual Tracker")
-
-                    # Determine colors: Green if positive, Red if negative
-                    bar_colors = [
-                        "#00C851" if val > 0 else "#FF4444"
-                        for val in clean_tl["residuals"]
-                    ]
-
-                    fig = go.Figure(
-                        data=[
-                            go.Bar(
-                                x=clean_tl["dates"],
-                                y=clean_tl["residuals"],
-                                marker_color=bar_colors,
-                                width=0.4,
-                            )
-                        ]
+                    # Force the Bar Chart to stay at the bottom 25% of the screen
+                    fig.update_yaxes(title_text="ROIC (%)", secondary_y=False)
+                    fig.update_yaxes(
+                        range=[0, 36],
+                        showgrid=False,
+                        showticklabels=False,
+                        secondary_y=True,
                     )
 
                     fig.update_layout(
-                        margin=dict(l=0, r=0, t=20, b=0),
-                        yaxis_title="Margin Beat/Miss",
-                        plot_bgcolor="rgba(0,0,0,0)",
-                        paper_bgcolor="rgba(0,0,0,0)",
-                        # Draw a hard, bright zero-line so the user can easily see above/below
-                        shapes=[
-                            dict(
-                                type="line",
-                                xref="paper",
-                                x0=0,
-                                x1=1,
-                                y0=0,
-                                y1=0,
-                                line=dict(color="rgba(255, 255, 255, 0.5)", width=2),
-                            )
-                        ],
+                        height=500,
+                        hovermode="x unified",
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=1.02,
+                            xanchor="right",
+                            x=1,
+                        ),
+                        margin=dict(l=20, r=20, t=60, b=20),
                     )
 
                     st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.warning("Insufficient data to build convergence chart.")
 
-                    # 9. DNA Output
-                    with st.expander("View Mathematical DNA (Alpha Moat & Betas)"):
-                        st.markdown(
-                            f"**Alpha (Structural Moat):** `{final_payload['alpha_moat']}`"
+            # ---------------------------------------------------------
+            # VIEW 2: FUNDAMENTALS (Phase 1 Deep Dive)
+            # ---------------------------------------------------------
+            if show_fundamentals:
+                if not df_beneish.empty:
+                    latest_m_score = float(df_beneish.iloc[0]["Beneish_M_Score"])
+                    if latest_m_score > -1.78:
+                        st.error(
+                            f"🚨 **Beneish M-Score Warning: {latest_m_score}** - Statistical probability of earnings manipulation detected."
                         )
-                        st.write("**Beta Sensitivities:**")
-                        st.json(final_payload["betas"])
-                        st.write("**P-Values (Statistical Significance):**")
-                        st.json(final_payload["p_values"])
-            else:
-                st.info(
-                    "Macro Data is missing. Please run the ETL Control Center Macro Spigot first."
+                    else:
+                        st.success(
+                            f"✅ **Beneish M-Score: {latest_m_score}** - Accounting appears clean."
+                        )
+
+                st.subheader("Structural Anchors")
+                st.caption("Long-term capital efficiency and survival metrics.")
+
+                yc1, yc2, yc3, yc4, yc5, yc6 = st.columns(6)
+                with yc1:
+                    latest_roic = (
+                        df_roic["roic"].iloc[0] * 100
+                        if not df_roic.empty and pd.notnull(df_roic["roic"].iloc[0])
+                        else 0
+                    )
+                    st.metric("ROIC", f"{latest_roic:.2f}%")
+                with yc2:
+                    latest_fcf = (
+                        df_fcf["FCF_Yield"].iloc[0] * 100
+                        if not df_fcf.empty
+                        and pd.notnull(
+                            df_fcf.get("FCF_Yield", pd.Series([None])).iloc[0]
+                        )
+                        else 0
+                    )
+                    st.metric("FCF Yield", f"{latest_fcf:.2f}%")
+                with yc3:
+                    latest_de = (
+                        df_de["debt_to_equity"].iloc[0]
+                        if not df_de.empty
+                        and pd.notnull(df_de["debt_to_equity"].iloc[0])
+                        else 0
+                    )
+                    st.metric("Debt / Equity", f"{latest_de:.2f}")
+                with yc4:
+                    latest_ccc = (
+                        df_ccc["cash_conversion_cycle"].iloc[0]
+                        if not df_ccc.empty
+                        and pd.notnull(df_ccc["cash_conversion_cycle"].iloc[0])
+                        else 0
+                    )
+                    st.metric("Cash Conv. Cycle", f"{latest_ccc:.0f} Days")
+                with yc5:
+                    latest_dol = (
+                        df_dol["degree_of_operating_leverage"].iloc[0]
+                        if not df_dol.empty
+                        and pd.notnull(df_dol["degree_of_operating_leverage"].iloc[0])
+                        else 0
+                    )
+                    st.metric("Op. Leverage (DOL)", f"{latest_dol:.2f}x")
+                with yc6:
+                    latest_turnover = (
+                        df_turnover["asset_turnover"].iloc[0]
+                        if not df_turnover.empty
+                        and pd.notnull(df_turnover["asset_turnover"].iloc[0])
+                        else 0
+                    )
+                    st.metric("Asset Turnover", f"{latest_turnover:.2f}x")
+
+                st.divider()
+                st.subheader("Tactical Responders")
+                qc1, qc2, qc3, qc4 = st.columns(4)
+                with qc1:
+                    latest_op_margin = (
+                        df_op_margin["operating_margin"].iloc[0] * 100
+                        if not df_op_margin.empty
+                        and pd.notnull(df_op_margin["operating_margin"].iloc[0])
+                        else 0
+                    )
+                    st.metric("Operating Margin", f"{latest_op_margin:.2f}%")
+                with qc2:
+                    latest_gr_margin = (
+                        df_gr_margin["gross_margin"].iloc[0] * 100
+                        if not df_gr_margin.empty
+                        and pd.notnull(df_gr_margin["gross_margin"].iloc[0])
+                        else 0
+                    )
+                    st.metric("Gross Margin", f"{latest_gr_margin:.2f}%")
+                with qc3:
+                    latest_int_cov = (
+                        df_int_cov["interest_coverage"].iloc[0]
+                        if not df_int_cov.empty
+                        and pd.notnull(df_int_cov["interest_coverage"].iloc[0])
+                        else 0
+                    )
+                    st.metric("Interest Coverage", f"{latest_int_cov:.2f}x")
+                with qc4:
+                    latest_cfo_pat = (
+                        df_cfo_pat["cfo_to_pat"].iloc[0]
+                        if not df_cfo_pat.empty
+                        and pd.notnull(df_cfo_pat["cfo_to_pat"].iloc[0])
+                        else 0
+                    )
+                    st.metric("CFO / PAT", f"{latest_cfo_pat:.2f}")
+
+                st.divider()
+                st.subheader("Data Room")
+                with st.expander("View Raw Structural Matrices"):
+                    if not df_roic.empty:
+                        p1_merged = df_roic[["ReportDate", "roic"]]
+                        if not df_fcf.empty:
+                            p1_merged = pd.merge(
+                                p1_merged,
+                                df_fcf[["ReportDate", "FCF_Yield"]],
+                                on="ReportDate",
+                                how="outer",
+                            )
+                        if not df_de.empty:
+                            p1_merged = pd.merge(
+                                p1_merged,
+                                df_de[["ReportDate", "debt_to_equity"]],
+                                on="ReportDate",
+                                how="outer",
+                            )
+                        if not df_ccc.empty:
+                            p1_merged = pd.merge(
+                                p1_merged,
+                                df_ccc[["ReportDate", "cash_conversion_cycle"]],
+                                on="ReportDate",
+                                how="outer",
+                            )
+                        if not df_dol.empty:
+                            p1_merged = pd.merge(
+                                p1_merged,
+                                df_dol[["ReportDate", "degree_of_operating_leverage"]],
+                                on="ReportDate",
+                                how="outer",
+                            )
+                        if not df_turnover.empty:
+                            p1_merged = pd.merge(
+                                p1_merged,
+                                df_turnover[["ReportDate", "asset_turnover"]],
+                                on="ReportDate",
+                                how="outer",
+                            )
+                        st.dataframe(
+                            p1_merged.sort_values(by="ReportDate", ascending=False),
+                            use_container_width=True,
+                        )
+
+                with st.expander("View Raw Tactical Matrices"):
+                    if not df_op_margin.empty:
+                        p2_merged = df_op_margin[["ReportDate", "operating_margin"]]
+                        if not df_gr_margin.empty:
+                            p2_merged = pd.merge(
+                                p2_merged,
+                                df_gr_margin[["ReportDate", "gross_margin"]],
+                                on="ReportDate",
+                                how="outer",
+                            )
+                        if not df_int_cov.empty:
+                            p2_merged = pd.merge(
+                                p2_merged,
+                                df_int_cov[["ReportDate", "interest_coverage"]],
+                                on="ReportDate",
+                                how="outer",
+                            )
+                        if not df_cfo_pat.empty:
+                            p2_merged = pd.merge(
+                                p2_merged,
+                                df_cfo_pat[["ReportDate", "cfo_to_pat"]],
+                                on="ReportDate",
+                                how="outer",
+                            )
+                        st.dataframe(
+                            p2_merged.sort_values(by="ReportDate", ascending=False),
+                            use_container_width=True,
+                        )
+
+            # ---------------------------------------------------------
+            # VIEW 3: MACRO & OLS (Phase 2 Deep Dive)
+            # ---------------------------------------------------------
+            if show_macro_ols:
+                st.markdown("### External Macro Environment")
+
+                # --- NEW: ENGINE 2 (MACRO MOMENTUM TRACKER) ---
+                st.header("Engine 2: Macro Momentum & Regime Shifts")
+                st.caption(
+                    "Live 5-Year Z-Score evaluation of global macro velocity and acceleration."
                 )
+
+                try:
+                    macro_query = text(
+                        'SELECT "ReportDate", "IndicatorName", "Value" FROM macro_indicators'
+                    )
+                    macro_raw = pd.read_sql(macro_query, engine)
+                    macro_df = macro_raw.pivot(
+                        index="ReportDate", columns="IndicatorName", values="Value"
+                    )
+                    macro_df.index = pd.to_datetime(macro_df.index)
+                except Exception as e:
+                    st.error(f"Failed to load Macro Database: {e}")
+                    macro_df = pd.DataFrame()
+
+                if not macro_df.empty:
+                    # Instantiate Engine 2
+                    tracker = MacroMomentumTracker(macro_df)
+                    signals = tracker.get_latest_regime_signals()
+
+                    # Render the Z-Scores dynamically based on how many macro variables exist
+                    if signals:
+                        sig_cols = st.columns(len(signals))
+                        for i, (indicator, data) in enumerate(signals.items()):
+                            with sig_cols[i]:
+                                z_val = data["Z_Score"]
+                                status = data["Status"]
+
+                                if z_val is not None:
+                                    if z_val >= 2.0:
+                                        st.error(
+                                            f"🚨 **{indicator}**\n\nZ-Score: {z_val}\n\n*{status}*"
+                                        )
+                                    elif z_val <= -2.0:
+                                        st.success(
+                                            f"✅ **{indicator}**\n\nZ-Score: {z_val}\n\n*{status}*"
+                                        )
+                                    else:
+                                        st.info(
+                                            f"📊 **{indicator}**\n\nZ-Score: {z_val}\n\n*{status}*"
+                                        )
+                                else:
+                                    st.warning(
+                                        f"**{indicator}**\n\nInsufficient Data (<60 Mo)"
+                                    )
+                st.divider()
+
+                st.header("OLS Macro Bridge & Forensic Triage")
+                try:
+                    macro_query = text(
+                        'SELECT "ReportDate", "IndicatorName", "Value" FROM macro_indicators'
+                    )
+                    macro_raw = pd.read_sql(macro_query, engine)
+                    macro_df = macro_raw.pivot(
+                        index="ReportDate", columns="IndicatorName", values="Value"
+                    )
+                    macro_df.index = pd.to_datetime(macro_df.index)
+                except Exception as e:
+                    st.error(f"Failed to load Macro Database: {e}")
+                    macro_df = pd.DataFrame()
+
+                if not macro_df.empty:
+                    target_options = {
+                        "Operating Margin (Primary Bridge)": (
+                            "operating_margin",
+                            df_op_margin,
+                        ),
+                        "Gross Margin (Anchor)": ("gross_margin", df_gr_margin),
+                        "Interest Coverage (Solvency)": (
+                            "interest_coverage",
+                            df_int_cov,
+                        ),
+                        "Asset Turnover (Productivity)": (
+                            "asset_turnover",
+                            df_turnover,
+                        ),
+                    }
+                    selected_pillar_label = st.selectbox(
+                        "Select Micro Pillar to Validate:", list(target_options.keys())
+                    )
+                    target_col, target_df = target_options[selected_pillar_label]
+
+                    if not target_df.empty:
+                        ols_engine = Phase2_OLS_Engine(macro_df, target_df)
+                        initial_payload = ols_engine.run_static_baseline(
+                            target_col, sector=company_sector, industry=company_industry
+                        )
+
+                        if "error" in initial_payload:
+                            st.warning(
+                                f"Could not process {target_col}: {initial_payload['error']}"
+                            )
+                        else:
+                            init_tl = initial_payload["timeline_data"]
+                            n_quarters = len(init_tl["dates"])
+                            custom_macro_selection = None
+
+                            if 12 <= n_quarters < 24:
+                                active_beams = list(initial_payload["betas"].keys())
+                                st.info(
+                                    f"💡 Limited Data Detected (N={n_quarters}). Engine auto-loaded the **{company_sector}** macro template: `{active_beams}`"
+                                )
+                                all_beams = [
+                                    "Brent_Crude",
+                                    "USD_INR",
+                                    "Broad_Commodity",
+                                    "US_Dollar_Index_3M",
+                                    "India_CPI_3M",
+                                    "India_10Y_Yield_6M",
+                                    "US_10Y_Yield_6M",
+                                    "Yield_Spread_6M",
+                                ]
+                                default_beams = [
+                                    b for b in active_beams if b in all_beams
+                                ]
+                                custom_macro_selection = st.multiselect(
+                                    "Override Macro Template (Select exactly 3):",
+                                    options=all_beams,
+                                    default=default_beams,
+                                    max_selections=3,
+                                    key=f"macro_override_{target_col}",
+                                )
+
+                            if (
+                                custom_macro_selection is not None
+                                and len(custom_macro_selection) == 3
+                                and set(custom_macro_selection) != set(default_beams)
+                            ):
+                                init_tl = initial_payload["timeline_data"]
+
+                            system_outliers = [
+                                date
+                                for date, is_out in zip(
+                                    init_tl["dates"], init_tl["is_outlier"]
+                                )
+                                if is_out
+                            ]
+
+                            st.markdown("### Outlier Control Center")
+                            if system_outliers:
+                                st.warning(
+                                    f"System detected {len(system_outliers)} mathematical anomalies: {', '.join(system_outliers)}"
+                                )
+                            else:
+                                st.success("No mathematical anomalies detected.")
+
+                            handling_mode = st.radio(
+                                "Select Outlier Handling Strategy:",
+                                [
+                                    "Include All Data",
+                                    "Exclude System-Detected Outliers",
+                                    "Custom Manual Selection",
+                                ],
+                                horizontal=True,
+                                key=f"radio_outlier_{target_col}",
+                            )
+                            final_exclusions = []
+                            if handling_mode == "Exclude System-Detected Outliers":
+                                final_exclusions = system_outliers
+                            elif handling_mode == "Custom Manual Selection":
+                                final_exclusions = st.multiselect(
+                                    "Select specific quarters to drop from the model:",
+                                    options=init_tl["dates"],
+                                    default=system_outliers,
+                                    key=f"multi_{target_col}",
+                                )
+
+                            if final_exclusions:
+                                clean_payload = ols_engine.run_static_baseline(
+                                    target_col,
+                                    sector=company_sector,
+                                    industry=company_industry,
+                                    excluded_dates=final_exclusions,
+                                    custom_beams=custom_macro_selection,
+                                )
+                                if "error" in clean_payload:
+                                    clean_payload = initial_payload
+                            else:
+                                clean_payload = initial_payload
+
+                            clean_tl = clean_payload["timeline_data"]
+                            final_payload = clean_payload
+
+                            st.metric(
+                                "Bridge Strength (R-Squared)",
+                                f"{final_payload['r_squared']*100:.1f}%",
+                            )
+                            st.divider()
+                            st.markdown(
+                                f"### The Bridge: {target_col} Actual vs. Predicted"
+                            )
+
+                            fig_line = go.Figure()
+                            fig_line.add_trace(
+                                go.Scatter(
+                                    x=clean_tl["dates"] + clean_tl["dates"][::-1],
+                                    y=clean_tl["conf_upper"]
+                                    + clean_tl["conf_lower"][::-1],
+                                    fill="toself",
+                                    fillcolor="rgba(128,128,128,0.2)",
+                                    line=dict(color="rgba(255,255,255,0)"),
+                                    name="95% Tolerance",
+                                    hoverinfo="skip",
+                                )
+                            )
+
+                            normal_x, normal_y, outlier_x, outlier_y = [], [], [], []
+                            for i in range(len(init_tl["dates"])):
+                                if (
+                                    init_tl["is_outlier"][i]
+                                    or init_tl["dates"][i] in final_exclusions
+                                ):
+                                    outlier_x.append(init_tl["dates"][i])
+                                    outlier_y.append(init_tl["actual_y"][i])
+                                else:
+                                    normal_x.append(init_tl["dates"][i])
+                                    normal_y.append(init_tl["actual_y"][i])
+
+                            fig_line.add_trace(
+                                go.Scatter(
+                                    x=init_tl["dates"],
+                                    y=init_tl["actual_y"],
+                                    mode="lines",
+                                    name="Actual Trendline",
+                                    line=dict(color="#FF4B4B", width=2),
+                                    hoverinfo="skip",
+                                )
+                            )
+                            fig_line.add_trace(
+                                go.Scatter(
+                                    x=normal_x,
+                                    y=normal_y,
+                                    mode="markers",
+                                    name="Normal Quarter",
+                                    marker=dict(color="#FF4B4B", size=8),
+                                )
+                            )
+                            fig_line.add_trace(
+                                go.Scatter(
+                                    x=outlier_x,
+                                    y=outlier_y,
+                                    mode="markers",
+                                    name="Flagged Outlier",
+                                    marker=dict(
+                                        color="#FFC107",
+                                        size=12,
+                                        line=dict(color="red", width=2),
+                                    ),
+                                    hovertemplate="<b>%{x}</b><br>Outlier Value: %{y}<extra></extra>",
+                                )
+                            )
+                            fig_line.add_trace(
+                                go.Scatter(
+                                    x=clean_tl["dates"],
+                                    y=clean_tl["predicted_y"],
+                                    mode="lines",
+                                    name="OLS Predicted",
+                                    line=dict(color="#0068C9", dash="dash", width=2),
+                                    connectgaps=True,
+                                )
+                            )
+
+                            if (
+                                "phantom_dot" in final_payload
+                                and final_payload["phantom_dot"]
+                            ):
+                                phantom = final_payload["phantom_dot"]
+                                fig_line.add_trace(
+                                    go.Scatter(
+                                        x=[
+                                            clean_tl["dates"][-1],
+                                            phantom["target_date"],
+                                        ],
+                                        y=[
+                                            clean_tl["predicted_y"][-1],
+                                            phantom["predicted_value"],
+                                        ],
+                                        mode="lines",
+                                        name="Forward Trajectory",
+                                        line=dict(color="#00FFAA", dash="dot", width=2),
+                                        showlegend=False,
+                                        hoverinfo="skip",
+                                    )
+                                )
+                                fig_line.add_trace(
+                                    go.Scatter(
+                                        x=[phantom["target_date"]],
+                                        y=[phantom["predicted_value"]],
+                                        mode="markers",
+                                        name="Phantom Predictor (Next Qtr)",
+                                        marker=dict(
+                                            color="rgba(0,0,0,0)",
+                                            size=14,
+                                            line=dict(color="#00FFAA", width=3),
+                                        ),
+                                        hovertemplate="<b>Projected: %{x}</b><br>Value: %{y}<extra></extra>",
+                                    )
+                                )
+
+                            fig_line.update_layout(
+                                margin=dict(l=0, r=0, t=30, b=0),
+                                plot_bgcolor="rgba(0,0,0,0)",
+                                paper_bgcolor="rgba(0,0,0,0)",
+                            )
+                            st.plotly_chart(
+                                fig_line,
+                                use_container_width=True,
+                                key=f"chart_{target_col}",
+                            )
+
+                            if (
+                                "phantom_dot" in final_payload
+                                and final_payload["phantom_dot"]
+                            ):
+                                st.success(
+                                    f"Based on live trailing 90-day macro data, the engine projects the target metric to hit **{phantom['predicted_value']:.4f}** for the upcoming unreleased quarter ending **{phantom['target_date']}**."
+                                )
+
+                            with st.expander("View Underlying Numerical Data"):
+                                chart_df = pd.DataFrame(
+                                    {
+                                        "ReportDate": clean_tl["dates"],
+                                        "Actual Reported": [
+                                            round(val, 4)
+                                            for val in clean_tl["actual_y"]
+                                        ],
+                                        "OLS Predicted": [
+                                            round(val, 4)
+                                            for val in clean_tl["predicted_y"]
+                                        ],
+                                        "Upper Tolerance Band": [
+                                            round(val, 4)
+                                            for val in clean_tl["conf_upper"]
+                                        ],
+                                        "Lower Tolerance Band": [
+                                            round(val, 4)
+                                            for val in clean_tl["conf_lower"]
+                                        ],
+                                    }
+                                ).set_index("ReportDate")
+                                st.dataframe(chart_df, use_container_width=True)
+
+                            st.markdown("#### Residual Tracker")
+                            bar_colors = [
+                                "#00C851" if val > 0 else "#FF4444"
+                                for val in clean_tl["residuals"]
+                            ]
+                            fig_res = go.Figure(
+                                data=[
+                                    go.Bar(
+                                        x=clean_tl["dates"],
+                                        y=clean_tl["residuals"],
+                                        marker_color=bar_colors,
+                                        width=0.4,
+                                    )
+                                ]
+                            )
+                            fig_res.update_layout(
+                                margin=dict(l=0, r=0, t=20, b=0),
+                                yaxis_title="Margin Beat/Miss",
+                                plot_bgcolor="rgba(0,0,0,0)",
+                                paper_bgcolor="rgba(0,0,0,0)",
+                                shapes=[
+                                    dict(
+                                        type="line",
+                                        xref="paper",
+                                        x0=0,
+                                        x1=1,
+                                        y0=0,
+                                        y1=0,
+                                        line=dict(
+                                            color="rgba(255, 255, 255, 0.5)", width=2
+                                        ),
+                                    )
+                                ],
+                            )
+                            st.plotly_chart(fig_res, use_container_width=True)
+
+                            with st.expander(
+                                "View Mathematical DNA (Alpha Moat & Betas)"
+                            ):
+                                st.markdown(
+                                    f"**Alpha (Structural Moat):** `{final_payload['alpha_moat']}`"
+                                )
+                                st.write("**Beta Sensitivities:**")
+                                st.json(final_payload["betas"])
+                                st.write("**P-Values (Statistical Significance):**")
+                                st.json(final_payload["p_values"])
+                else:
+                    st.info(
+                        "Macro Data is missing. Please run the ETL Control Center Macro Spigot first."
+                    )
 
 elif app_mode == "Market Overview":
     st.title("Market Overview")

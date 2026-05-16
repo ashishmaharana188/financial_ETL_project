@@ -342,3 +342,76 @@ class Phase2_OLS_Engine:
         payload["phantom_dot"] = self.predict_phantom_dot(model, valid_cols, last_date)
 
         return payload
+
+
+import pandas as pd
+import numpy as np
+
+
+class MacroMomentumTracker:
+    def __init__(self, df_macro: pd.DataFrame):
+        """
+        Initializes Engine 2: The Momentum Tracker.
+        Expects df_macro to have a DatetimeIndex (Monthly) and macro variables as columns.
+        """
+        # Ensure data is strictly chronological for derivative math
+        self.df = df_macro.copy().sort_index()
+
+    def calculate_momentum(self, column_name: str) -> pd.DataFrame:
+        """
+        Executes the calculus and statistical normalization for a single macro variable.
+        """
+        if column_name not in self.df.columns:
+            raise ValueError(f"Column '{column_name}' not found in macro data.")
+
+        df_calc = pd.DataFrame(index=self.df.index)
+        df_calc["Value"] = self.df[column_name]
+
+        # 1. Velocity (1st Derivative): Month-over-Month absolute change
+        df_calc["Velocity"] = df_calc["Value"].diff(1)
+
+        # 2. Acceleration (2nd Derivative): Month-over-Month change in Velocity
+        df_calc["Acceleration"] = df_calc["Velocity"].diff(1)
+
+        # 3. The Noise Filter: 3-Month Simple Moving Average (SMA) of Acceleration
+        df_calc["Smoothed_Accel"] = df_calc["Acceleration"].rolling(window=3).mean()
+
+        # 4. The Normalizer: 60-Month (5-Year) Rolling Z-Score
+        roll_mean_60 = df_calc["Smoothed_Accel"].rolling(window=60).mean()
+        roll_std_60 = df_calc["Smoothed_Accel"].rolling(window=60).std()
+
+        # Prevent division by zero flatlining
+        roll_std_60 = roll_std_60.replace(0, np.nan)
+
+        df_calc["Z_Score"] = (df_calc["Smoothed_Accel"] - roll_mean_60) / roll_std_60
+
+        return df_calc
+
+    def get_latest_regime_signals(self) -> dict:
+        """
+        Scans all macro variables and returns the most recent Z-Score to identify
+        immediate 5-year extremes.
+        """
+        signals = {}
+        for col in self.df.columns:
+            df_calc = self.calculate_momentum(col)
+            valid_z = df_calc["Z_Score"].dropna()
+
+            if not valid_z.empty:
+                latest_z = valid_z.iloc[-1]
+                # Determine Regime Interpretation
+                if latest_z >= 2.0:
+                    status = "EXTREME ACCELERATION (Worst is hitting)"
+                elif latest_z <= -2.0:
+                    status = "EXTREME DECELERATION (Worst is over)"
+                else:
+                    status = "NORMAL NOISE"
+
+                signals[col] = {"Z_Score": round(latest_z, 2), "Status": status}
+            else:
+                signals[col] = {
+                    "Z_Score": None,
+                    "Status": "Insufficient Data (<60 Months)",
+                }
+
+        return signals
