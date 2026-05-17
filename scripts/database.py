@@ -10,7 +10,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, insert
-from sqlalchemy import Column, String, Date, MetaData, Table
+from sqlalchemy import Column, String, Date, MetaData, Table, DateTime
 
 # Setup Engine
 engine = create_engine("postgresql+psycopg2://postgres:123456@localhost:5432/postgres")
@@ -18,6 +18,53 @@ engine = create_engine("postgresql+psycopg2://postgres:123456@localhost:5432/pos
 # Setup Metadata
 metadata = MetaData(schema="public")
 
+market_1d = Table(
+    "market_1d",
+    metadata,
+    Column("ticker", String, primary_key=True),
+    Column("date", DateTime, primary_key=True),
+    Column("open", Numeric),
+    Column("high", Numeric),
+    Column("low", Numeric),
+    Column("close", Numeric),
+    Column("volume", Numeric),
+)
+
+market_30m = Table(
+    "market_30m",
+    metadata,
+    Column("ticker", String, primary_key=True),
+    Column("date", DateTime, primary_key=True),
+    Column("open", Numeric),
+    Column("high", Numeric),
+    Column("low", Numeric),
+    Column("close", Numeric),
+    Column("volume", Numeric),
+)
+
+market_5m = Table(
+    "market_5m",
+    metadata,
+    Column("ticker", String, primary_key=True),
+    Column("date", DateTime, primary_key=True),
+    Column("open", Numeric),
+    Column("high", Numeric),
+    Column("low", Numeric),
+    Column("close", Numeric),
+    Column("volume", Numeric),
+)
+
+market_1m = Table(
+    "market_1m",
+    metadata,
+    Column("ticker", String, primary_key=True),
+    Column("date", DateTime, primary_key=True),
+    Column("open", Numeric),
+    Column("high", Numeric),
+    Column("low", Numeric),
+    Column("close", Numeric),
+    Column("volume", Numeric),
+)
 
 company_profiles = Table(
     "company_profiles",

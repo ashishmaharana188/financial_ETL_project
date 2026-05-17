@@ -7,6 +7,6 @@ env/
 __pycache__/
 *.py[cod]
 *$py.class
-
+offline_data_cache
 .DS_Store
 Thumbs.db
