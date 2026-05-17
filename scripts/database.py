@@ -10,7 +10,17 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, insert
-from sqlalchemy import Column, String, Date, MetaData, Table, DateTime
+from sqlalchemy import (
+    Column,
+    String,
+    Date,
+    MetaData,
+    Table,
+    DateTime,
+    Float,
+    BigInteger,
+    TIMESTAMP,
+)
 
 # Setup Engine
 engine = create_engine("postgresql+psycopg2://postgres:123456@localhost:5432/postgres")
@@ -18,52 +28,49 @@ engine = create_engine("postgresql+psycopg2://postgres:123456@localhost:5432/pos
 # Setup Metadata
 metadata = MetaData(schema="public")
 
-market_1d = Table(
-    "market_1d",
+market_metadata = Table(
+    "market_metadata",
     metadata,
-    Column("ticker", String, primary_key=True),
-    Column("date", DateTime, primary_key=True),
-    Column("open", Numeric),
-    Column("high", Numeric),
-    Column("low", Numeric),
-    Column("close", Numeric),
-    Column("volume", Numeric),
+    # The actual symbol yfinance or the exchange uses (e.g., '^TNX', 'RELIANCE.NS', 'DX-Y.NYB')
+    Column("Ticker", String(50), primary_key=True, index=True),
+    # The translated name used in your macro table (e.g., 'US_10Y_Yield').
+    # Can be NULL for regular equities.
+    Column("IndicatorName", String(100), nullable=True),
+    # Tells the Python scraper exactly which table to insert the data into
+    Column(
+        "TargetTable", String(50), nullable=False
+    ),  # 'market_pricing_daily' OR 'macro_indicators'
+    Column(
+        "AssetClass", String(50), nullable=False
+    ),  # 'Equity', 'Macro_Index', 'Volatility'
+    Column("Exchange", String(50)),
+    Column("IsActive", Boolean, default=True),
+    Column("Description", String(255)),
 )
 
-market_30m = Table(
-    "market_30m",
+market_pricing_daily = Table(
+    "market_pricing_daily",
     metadata,
-    Column("ticker", String, primary_key=True),
-    Column("date", DateTime, primary_key=True),
-    Column("open", Numeric),
-    Column("high", Numeric),
-    Column("low", Numeric),
-    Column("close", Numeric),
-    Column("volume", Numeric),
+    Column("IndicatorName", String(100), primary_key=True, index=True),
+    Column("ReportDate", TIMESTAMP, primary_key=True, index=True),
+    # The OHLCV columns
+    Column("Open", Float, nullable=True),
+    Column("High", Float, nullable=True),
+    Column("Low", Float, nullable=True),
+    Column("Close_Value", Float, nullable=False),
+    Column("Volume", BigInteger, nullable=True),
 )
 
-market_5m = Table(
-    "market_5m",
+macro_indicators = Table(
+    "macro_indicators",
     metadata,
-    Column("ticker", String, primary_key=True),
-    Column("date", DateTime, primary_key=True),
-    Column("open", Numeric),
-    Column("high", Numeric),
-    Column("low", Numeric),
-    Column("close", Numeric),
-    Column("volume", Numeric),
-)
-
-market_1m = Table(
-    "market_1m",
-    metadata,
-    Column("ticker", String, primary_key=True),
-    Column("date", DateTime, primary_key=True),
-    Column("open", Numeric),
-    Column("high", Numeric),
-    Column("low", Numeric),
-    Column("close", Numeric),
-    Column("volume", Numeric),
+    Column("IndicatorName", String(100), primary_key=True, index=True),
+    Column("ReportDate", TIMESTAMP, primary_key=True, index=True),
+    Column("Open", Float, nullable=True),
+    Column("High", Float, nullable=True),
+    Column("Low", Float, nullable=True),
+    Column("Close_Value", Float, nullable=False),
+    Column("Volume", BigInteger, nullable=True),
 )
 
 company_profiles = Table(
@@ -76,13 +83,6 @@ company_profiles = Table(
     Column("valid_data_since", Date),
 )
 
-macro_indicators = Table(
-    "macro_indicators",
-    metadata,
-    Column("IndicatorName", String(100), primary_key=True),
-    Column("ReportDate", String(50), primary_key=True),
-    Column("Value", Numeric),
-)
 
 ai_forensic_logs = Table(
     "ai_forensic_logs",

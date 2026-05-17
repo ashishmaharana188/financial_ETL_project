@@ -17,7 +17,7 @@ from scripts.ratioAnalysis import (
     fetch_revenue_growth_yoy,
     fetch_fcf_margin,
 )
-from scripts.macroScrape import run_macro_pipeline
+from scripts.macroScrape import run_macro_pipeline, register_discovered_tickers
 from scripts.macroAnalysis import Phase2_OLS_Engine
 import plotly.graph_objects as go
 from scripts.ratioAnalysis import fetch_piotroski_f_score, fetch_beneish_m_score
@@ -145,7 +145,10 @@ if app_mode == "ETL Control Center":
                 f"Executing pipeline via {selected_spigot} for {len(target_tickers)} client(s)..."
             ):
                 try:
-                    #  Passing the requested_source into the ETL engine
+                    # THE JUNCTION: Intercept and register tickers before ETL begins
+                    register_discovered_tickers(target_tickers)
+
+                    # Executing the core ETL engine
                     st.session_state.pipeline_results = run_etl_pipeline(
                         target_tickers=target_tickers,
                         ai_mode=mode_param,
@@ -609,11 +612,13 @@ elif app_mode == "Single Company Deep Dive":
                 st.header("OLS Macro Bridge & Forensic Triage")
                 try:
                     macro_query = text(
-                        'SELECT "ReportDate", "IndicatorName", "Value" FROM macro_indicators'
+                        'SELECT "ReportDate", "IndicatorName", "Close_Value" FROM macro_indicators'
                     )
                     macro_raw = pd.read_sql(macro_query, engine)
                     macro_df = macro_raw.pivot(
-                        index="ReportDate", columns="IndicatorName", values="Value"
+                        index="ReportDate",
+                        columns="IndicatorName",
+                        values="Close_Value",
                     )
                     macro_df.index = pd.to_datetime(macro_df.index)
                 except Exception as e:
