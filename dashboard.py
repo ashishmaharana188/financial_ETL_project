@@ -69,7 +69,7 @@ if app_mode == "ETL Control Center":
 
     with col1:
         # Button 1: The Daily Catch-Up (Delta Bridge)
-        if st.button("Run Daily Catch-Up (Delta Bridge)", use_container_width=True):
+        if st.button("Run Daily Catch-Up (Delta Bridge)", use_container_width=False):
             with st.spinner(
                 "Executing Delta Bridge... (Check terminal for real-time progress)"
             ):
@@ -78,7 +78,7 @@ if app_mode == "ETL Control Center":
 
     with col2:
         # Button 2: The Master Sync (Full Download)
-        if st.button("Run Master Data Sync (Full)", use_container_width=True):
+        if st.button("Run Master Data Sync (Full)", use_container_width=False):
             with st.spinner(
                 "Executing Full Master Sync... (Check terminal for real-time progress)"
             ):

@@ -74,9 +74,9 @@ def push_to_derivatives_matrix(df):
         with engine.begin() as conn:
             for record in records:
                 conn.execute(upsert_query, record)
-        print("    [✔] SUCCESS: Derivatives Matrix successfully updated.")
+        print(" SUCCESS: Derivatives Matrix successfully updated.")
     except Exception as e:
-        print(f"    [!] DATABASE ERROR:\n{e}")
+        print(f"DATABASE ERROR:\n{e}")
 
 
 def parse_derivatives_zip(target_date):
@@ -86,43 +86,76 @@ def parse_derivatives_zip(target_date):
     fo_path = os.path.join(CACHE_DIR, f"nse_fo_bhav_{ddmmyyyy}.zip")
 
     if not os.path.exists(fo_path):
-        print(f"[-] No F&O Zip found for {target_dt.strftime('%Y-%m-%d')}")
+        print(f"No F&O Zip found for {target_dt.strftime('%Y-%m-%d')}")
         return
 
     print(f"\n--- Matrixing Derivatives for {target_dt.strftime('%Y-%m-%d')} ---")
 
     try:
-        inner_csv_name = f"fo{target_dt.strftime('%d%b%Y').upper()}bhav.csv"
         with zipfile.ZipFile(fo_path, "r") as z:
-            with z.open(inner_csv_name) as f:
+            # Look inside the zip and find the exact name of the CSV file dynamically
+            file_list = z.namelist()
+
+            # Find the file that looks like a bhavcopy CSV (ignores case sensitivity)
+            csv_filename = next(
+                (
+                    name
+                    for name in file_list
+                    if name.lower().endswith(".csv") and "bhav" in name.lower()
+                ),
+                None,
+            )
+
+            # Fallback: if 'bhav' isn't in the name, just grab whatever CSV is in there
+            if not csv_filename:
+                csv_filename = next(
+                    (name for name in file_list if name.lower().endswith(".csv")), None
+                )
+
+            if not csv_filename:
+                print(f"    [!] Error: No valid CSV found inside {fo_path}")
+                return
+
+            with z.open(csv_filename) as f:
                 fo_df = pd.read_csv(f, encoding="latin1")
+
     except Exception as e:
         print(f"    [!] Error reading F&O zip: {e}")
         return
 
-    fo_df.columns = fo_df.columns.str.strip()
+    fo_df.columns = (
+        fo_df.columns.str.replace("ï»¿", "", regex=False)
+        .str.replace("\ufeff", "", regex=False)
+        .str.strip()
+        .str.upper()
+    )
 
     # 1. Base Formatting
-    fo_df["SYMBOL"] = fo_df["SYMBOL"].str.strip()
-    fo_df["EXPIRY_DT"] = pd.to_datetime(fo_df["EXPIRY_DT"])
+    fo_df["TCKRSYMB"] = fo_df["TCKRSYMB"].str.strip()
+    fo_df["XPRYDT"] = pd.to_datetime(fo_df["XPRYDT"])
 
     # Create the core raw matrix
     raw_df = pd.DataFrame(
         {
-            "Ticker": fo_df["SYMBOL"],
+            "Ticker": fo_df["TCKRSYMB"],
             "ReportDate": target_dt.strftime("%Y-%m-%d %H:%M:%S"),
-            "ExpiryDate": fo_df["EXPIRY_DT"],
+            "ExpiryDate": fo_df["XPRYDT"],
             "InstrumentType": fo_df.apply(
                 lambda x: (
-                    "FUT" if "FUT" in x["INSTRUMENT"] else x["OPTION_TYP"].strip()
+                    str(x["OPTNTP"]).strip()
+                    if pd.notna(x["OPTNTP"])
+                    and str(x["OPTNTP"]).strip() in ["CE", "PE"]
+                    else "FUT"
                 ),
                 axis=1,
             ),
-            "StrikePrice": fo_df["STRIKE_PR"].astype(float),
-            "Close_Price": fo_df["CLOSE"],
-            "Open_Interest": fo_df["OPEN_INT"],
-            "Change_In_OI": fo_df["CHG_IN_OI"],
-            "Volume": fo_df["CONTRACTS"],
+            "StrikePrice": pd.to_numeric(fo_df["STRKPRIC"], errors="coerce").fillna(
+                0.0
+            ),
+            "Close_Price": fo_df["CLSPRIC"],
+            "Open_Interest": fo_df["OPNINTRST"],
+            "Change_In_OI": fo_df["CHNGINOPNINTRST"],
+            "Volume": fo_df["TTLTRADGVOL"],
         }
     )
 
@@ -142,7 +175,7 @@ def parse_derivatives_zip(target_date):
         .unstack()
     )
 
-    agg_df = pd.DataFrame(index=pcr_pivot.index.droplevel(-1).drop_duplicates())
+    agg_df = pd.DataFrame(index=pcr_pivot.index)
     agg_df["OI_PCR"] = pcr_pivot[("Open_Interest", "PE")] / pcr_pivot[
         ("Open_Interest", "CE")
     ].replace(0, np.nan)
