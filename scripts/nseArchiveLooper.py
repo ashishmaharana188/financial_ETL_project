@@ -166,4 +166,41 @@ def run_master_archive_backfill():
 
 
 if __name__ == "__main__":
-    run_master_archive_backfill()
+    import argparse
+    import pandas as pd
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--start", type=str)
+    parser.add_argument("--end", type=str)
+    args = parser.parse_args()
+
+    if args.start and args.end:
+        start_dt = pd.to_datetime(args.start)
+        end_dt = pd.to_datetime(args.end)
+
+        print(f"=== Running Delta Sync: {args.start} to {args.end} ===")
+        scraper = MasterArchiveScraper()
+        current_date = start_dt
+
+        while current_date <= end_dt:
+            if current_date.weekday() < 5:
+                ddmmyyyy = current_date.strftime("%d%m%Y")
+                mcx_yyyymmdd = current_date.strftime("%Y%m%d")
+
+                print(f"  -> Fetching {current_date.strftime('%Y-%m-%d')}")
+                # (Keep your existing URLs and scraper.fetch_nse_file logic here,
+                # exactly as it is in your run_daily_archives loop)
+                cash_url = f"https://archives.nseindia.com/products/content/sec_bhavdata_full_{ddmmyyyy}.csv"
+                cash_path = os.path.join(CACHE_DIR, f"nse_cash_{ddmmyyyy}.csv")
+                scraper.fetch_nse_file(cash_url, cash_path, "NSE Cash Bhavcopy")
+
+                oi_url = f"https://archives.nseindia.com/content/nsccl/fao_participant_oi_{ddmmyyyy}.csv"
+                oi_path = os.path.join(CACHE_DIR, f"nse_part_oi_{ddmmyyyy}.csv")
+                scraper.fetch_nse_file(oi_url, oi_path, "Participant OI")
+
+                fo_url = f"https://archives.nseindia.com/content/historical/DERIVATIVES/{current_date.strftime('%Y')}/{current_date.strftime('%b').upper()}/fo{current_date.strftime('%d%b%Y').upper()}bhav.csv.zip"
+                fo_path = os.path.join(CACHE_DIR, f"nse_fo_bhav_{ddmmyyyy}.zip")
+                scraper.fetch_nse_file(fo_url, fo_path, "NSE F&O Zip")
+            current_date += timedelta(days=1)
+    else:
+        run_master_archive_backfill(10)

@@ -1,6 +1,6 @@
 import json
 from sentence_transformers import util
-from scripts.model_runtime import runtime
+from scripts.modelRuntime import runtime
 
 
 def get_top_buckets(

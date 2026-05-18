@@ -19,13 +19,13 @@ from sqlalchemy.dialects.postgresql import insert
 from scripts.database import engine, raw_financials, company_profiles
 from scripts.reconciliation import extract_mapped_keys, execute_three_way_match
 from sqlalchemy import text
-from scripts.model_runtime import runtime
-from scripts.model_runtime import runtime
+from scripts.modelRuntime import runtime
+from scripts.modelRuntime import runtime
 from scripts.vectorize import get_top_buckets
 from scripts.reasoning import analyze_key_with_phi3
 import streamlit as st
 from datetime import datetime
-from scripts.edgar_utils import backfill_structural_breaks
+from scripts.edgarUtils import backfill_structural_breaks
 
 runtime.load_models()
 

@@ -1,26 +1,22 @@
-from sqlalchemy import (
-    create_engine,
-    Column,
-    String,
-    Date,
-    Numeric,
-    MetaData,
-    Table,
-    Boolean,
-    text,
-)
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy import (
     Column,
     String,
     Date,
-    MetaData,
     Table,
     DateTime,
     Float,
     BigInteger,
     TIMESTAMP,
+    create_engine,
+    Numeric,
+    MetaData,
+    Boolean,
+    text,
+    Integer,
 )
+import pandas as pd
+from datetime import datetime, timedelta
 
 # Setup Engine
 engine = create_engine("postgresql+psycopg2://postgres:123456@localhost:5432/postgres")
@@ -71,6 +67,66 @@ macro_indicators = Table(
     Column("Low", Float, nullable=True),
     Column("Close_Value", Float, nullable=False),
     Column("Volume", BigInteger, nullable=True),
+)
+
+market_bhavcopy_metrics = Table(
+    "market_bhavcopy_metrics",
+    metadata,
+    Column(
+        "IndicatorName", String(100), primary_key=True, index=True
+    ),  # Ticker or Commodity Name
+    Column("ReportDate", TIMESTAMP, primary_key=True, index=True),
+    # Standard OHLCV (Used for MCX, ETFs, SGBs)
+    Column("Open", Float, nullable=True),
+    Column("High", Float, nullable=True),
+    Column("Low", Float, nullable=True),
+    Column("Close_Value", Float, nullable=True),
+    Column("Volume", BigInteger, nullable=True),
+    # The Bhavcopy Extensions (For Equities/Indices)
+    Column("Delivery_Percentage", Float, nullable=True),
+    Column("Short_Volume", BigInteger, nullable=True),  # From nse_short_selling.csv
+    Column("Cost_Of_Carry", Float, nullable=True),  # Calculated Spot vs Futures
+    Column("Open_Interest", BigInteger, nullable=True),  # For MCX Commodities
+    # Asset Classification to prevent pollution
+    Column(
+        "AssetClass", String(50), nullable=False
+    ),  # 'Equity', 'ETF', 'SGB', 'Commodity'
+)
+
+derivatives_matrix = Table(
+    "derivatives_matrix",
+    metadata,
+    Column("Ticker", String(50), primary_key=True, index=True),
+    Column("ReportDate", TIMESTAMP, primary_key=True, index=True),
+    Column("ExpiryDate", Date, primary_key=True, index=True),  # e.g., '2026-05-28'
+    # 'FUT', 'CE', 'PE', or 'AGGREGATE' (for PCR/Rollover)
+    Column("InstrumentType", String(20), primary_key=True, index=True),
+    # 0.0 for Futures or Aggregates
+    Column("StrikePrice", Float, primary_key=True),
+    # The Matrix Values
+    Column("Close_Price", Float, nullable=True),
+    Column("Open_Interest", BigInteger, nullable=True),
+    Column("Change_In_OI", BigInteger, nullable=True),
+    Column("Volume", BigInteger, nullable=True),
+    # Aggregate Metrics (Populated only when InstrumentType = 'AGGREGATE')
+    Column("OI_PCR", Float, nullable=True),
+    Column("Change_In_OI_PCR", Float, nullable=True),
+    Column("Volume_PCR", Float, nullable=True),
+    Column("Rollover_Percentage", Float, nullable=True),
+)
+
+trade_events_ledger = Table(
+    "trade_events_ledger",
+    metadata,
+    Column("EventID", Integer, primary_key=True, autoincrement=True),  # Surrogate PK
+    Column("ReportDate", TIMESTAMP, index=True, nullable=False),
+    Column("Ticker", String(50), index=True, nullable=False),
+    # The Event Details
+    Column("EventType", String(50), nullable=False),  # 'Bulk Deal', 'Block Deal'
+    Column("ClientName", String(255), nullable=False),
+    Column("TransactionType", String(20), nullable=False),  # 'BUY' or 'SELL'
+    Column("Quantity", BigInteger, nullable=False),
+    Column("AveragePrice", Float, nullable=False),
 )
 
 company_profiles = Table(
@@ -280,3 +336,41 @@ yearly_indirect_cash_flow = Table(
 # Create all tables
 metadata.create_all(engine)
 print("All tables validated and created successfully.")
+
+
+def get_missing_dates(table_name):
+    """
+    Queries the database for the most recent date in a given table,
+    and returns a list of missing business days up to today.
+    """
+    # Using double quotes around ReportDate to respect PostgreSQL case sensitivity
+    query = text(f'SELECT MAX("ReportDate") FROM {table_name};')
+
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(query).scalar()
+
+        if result is None:
+            print(f"[*] Table {table_name} is empty. Bulk load required.")
+            return []
+
+        last_db_date = pd.to_datetime(result).date()
+        today = datetime.today().date()
+
+        if last_db_date >= today:
+            print(f"[*] {table_name} is fully up to date ({last_db_date}).")
+            return []
+
+        # Generate business days (B) between last_db_date (exclusive) and today (inclusive)
+        # We add 1 day to last_db_date so we don't re-process the exact day we already have.
+        start_date = last_db_date + timedelta(days=1)
+        missing_b_days = pd.bdate_range(start=start_date, end=today).date.tolist()
+
+        print(
+            f"[*] {table_name}: Found {len(missing_b_days)} missing business days between {last_db_date} and {today}."
+        )
+        return missing_b_days
+
+    except Exception as e:
+        print(f"[-] Error checking missing dates for {table_name}: {e}")
+        return []

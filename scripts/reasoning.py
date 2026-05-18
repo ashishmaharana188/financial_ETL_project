@@ -1,5 +1,5 @@
 import json
-from scripts.model_runtime import runtime
+from scripts.modelRuntime import runtime
 
 
 def analyze_key_with_phi3(unmapped_key, candidate_buckets):

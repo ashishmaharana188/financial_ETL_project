@@ -2,8 +2,9 @@ import os
 import time
 import pandas as pd
 from curl_cffi import requests
+from datetime import datetime
 
-CACHE_DIR = "offline_data_cache"
+CACHE_DIR = "offline_data_cache/master_archives"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 
@@ -17,7 +18,7 @@ def extract_value(val):
     return val
 
 
-def run_fiidii_backfill():
+def run_fiidii_backfill(years_to_fetch=None):
     print("=== Starting NiftyTrader FII/DII API Backfill ===\n")
 
     session = requests.Session(impersonate="chrome120")
@@ -26,11 +27,13 @@ def run_fiidii_backfill():
         "Referer": "https://www.niftytrader.in/",
     }
 
-    # Nov 2022 to current year gives us our solid 3.5 year mathematical baseline
-    years_to_fetch = [2026, 2025, 2024, 2023, 2022]
+    if years_to_fetch is None:
+        current_year = datetime.now().year
+        years_to_fetch = [current_year - i for i in range(5)]
+
     all_data = []
 
-    for year in years_to_fetch:
+    for year in sorted(years_to_fetch, reverse=True):
         print(f"    -> Fetching Daily FII/DII flow for {year}...")
         url = f"https://webapi.niftytrader.in/webapi/Resource/fii-dii-activity-data?request_type=yearly&year_month={year}"
 
@@ -95,4 +98,27 @@ def run_fiidii_backfill():
 
 
 if __name__ == "__main__":
-    run_fiidii_backfill()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--start", type=str, help="Start date YYYY-MM-DD")
+    parser.add_argument("--end", type=str, help="End date YYYY-MM-DD")
+    args = parser.parse_args()
+
+    # If the Orchestrator passes targeted dates
+    if args.start and args.end:
+        start_dt = pd.to_datetime(args.start)
+        end_dt = pd.to_datetime(args.end)
+
+        # The NiftyTrader API only takes years, so we extract the unique years
+        # that fall between the start and end dates.
+        start_year = start_dt.year
+        end_year = end_dt.year
+        target_years = list(range(start_year, end_year + 1))
+
+        print(f"=== Running Delta Sync for FII/DII: {args.start} to {args.end} ===")
+        run_fiidii_backfill(target_years)
+
+    # If run manually with no arguments, do the full bulk backfill
+    else:
+        run_fiidii_backfill()

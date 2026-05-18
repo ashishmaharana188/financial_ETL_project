@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 # The magic library that spoofs Chrome's TLS fingerprint to bypass Cloudflare
 from curl_cffi import requests
 
-CACHE_DIR = "offline_data_cache"
+CACHE_DIR = "offline_data_cache/master_archives"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 
@@ -98,4 +98,26 @@ def run_5_year_backfill():
 
 
 if __name__ == "__main__":
-    run_5_year_backfill()
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--start", type=str, help="Start date YYYY-MM-DD")
+    parser.add_argument("--end", type=str, help="End date YYYY-MM-DD")
+    args = parser.parse_args()
+
+    if args.start and args.end:
+        start_dt = pd.to_datetime(args.start)
+        end_dt = pd.to_datetime(args.end)
+
+        print(f"=== Running Delta Sync: {args.start} to {args.end} ===")
+        fetcher = NSEFetcher()
+        deal_types = ["bulk_deals", "block_deals", "short_selling"]
+
+        str_end = end_dt.strftime("%d-%m-%Y")
+        str_start = start_dt.strftime("%d-%m-%Y")
+
+        for d_type in deal_types:
+            fetcher.fetch_historical_deals(d_type, str_start, str_end)
+            time.sleep(4)
+    else:
+        run_5_year_backfill()  # Falls back to bulk if no dates provided

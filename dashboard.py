@@ -23,6 +23,7 @@ import plotly.graph_objects as go
 from scripts.ratioAnalysis import fetch_piotroski_f_score, fetch_beneish_m_score
 from plotly.subplots import make_subplots
 from scripts.macroAnalysis import Phase2_OLS_Engine, MacroMomentumTracker
+from scripts.downloadOrchestrator import trigger_full_sync, trigger_delta_sync
 
 st.set_page_config(
     page_title="Swarm Intelligence Platform",
@@ -33,6 +34,7 @@ st.set_page_config(
 st.sidebar.title("Swarm Intelligence")
 st.sidebar.markdown("Institutional Quantitative Platform")
 st.sidebar.divider()
+
 
 app_mode = st.sidebar.radio(
     "NAVIGATION MENU",
@@ -60,10 +62,28 @@ if app_mode == "ETL Control Center":
         "Run the mathematically validated pipeline on target companies and monitor forensic outputs."
     )
 
-    st.subheader("Macro Trends")
-    st.markdown(
-        "Fetch global economic weather: US/IN 10Y Yields, Brent Crude, and DXY."
-    )
+    st.subheader("Data Pipeline Controls")
+
+    # Use columns to put the buttons side-by-side
+    col1, col2 = st.columns(2)
+
+    with col1:
+        # Button 1: The Daily Catch-Up (Delta Bridge)
+        if st.button("Run Daily Catch-Up (Delta Bridge)", use_container_width=True):
+            with st.spinner(
+                "Executing Delta Bridge... (Check terminal for real-time progress)"
+            ):
+                trigger_delta_sync()
+            st.success("Delta Sync complete! Database is up to date.")
+
+    with col2:
+        # Button 2: The Master Sync (Full Download)
+        if st.button("Run Master Data Sync (Full)", use_container_width=True):
+            with st.spinner(
+                "Executing Full Master Sync... (Check terminal for real-time progress)"
+            ):
+                trigger_full_sync()
+            st.success("Master Sync complete! Full historical foundation rebuilt.")
 
     if st.button("Run Macro Pipeline", type="secondary", key="macro_start_button"):
         with st.spinner("Executing hybrid spigots... Check terminal for logs."):
