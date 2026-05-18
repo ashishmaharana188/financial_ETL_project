@@ -130,6 +130,19 @@ def parse_derivatives_zip(target_date):
         .str.upper()
     )
 
+    # BACKWARD COMPATIBILITY: Map old historical headers to the new NSE format
+    column_mapping = {
+        "SYMBOL": "TCKRSYMB",
+        "EXPIRY_DT": "XPRYDT",
+        "STRIKE_PR": "STRKPRIC",
+        "CLOSE": "CLSPRIC",
+        "OPEN_INT": "OPNINTRST",
+        "CHG_IN_OI": "CHNGINOPNINTRST",
+        "CONTRACTS": "TTLTRADGVOL",
+        "OPTION_TYP": "OPTNTP",
+    }
+    fo_df.rename(columns=column_mapping, inplace=True)
+
     # 1. Base Formatting
     fo_df["TCKRSYMB"] = fo_df["TCKRSYMB"].str.strip()
     fo_df["XPRYDT"] = pd.to_datetime(fo_df["XPRYDT"])
@@ -248,12 +261,14 @@ def parse_derivatives_zip(target_date):
 
 if __name__ == "__main__":
     import argparse
+    import re
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", type=str)
     parser.add_argument("--end", type=str)
     args = parser.parse_args()
 
+    # Scenario A: Frontend Dashboard Trigger via Orchestrator (Delta Bridge)
     if args.start and args.end:
         start_dt = pd.to_datetime(args.start)
         end_dt = pd.to_datetime(args.end)
@@ -262,9 +277,43 @@ if __name__ == "__main__":
             if current_date.weekday() < 5:
                 parse_derivatives_zip(current_date)
             current_date += pd.Timedelta(days=1)
+
+    # Scenario B: Manual Direct Execution - Rebuild/Parse ALL files in local cache
     else:
-        # Test mode: run for yesterday if no args provided
-        test_date = pd.to_datetime("today") - pd.Timedelta(days=1)
-        if test_date.weekday() >= 5:  # If weekend, push to Friday
-            test_date -= pd.Timedelta(days=test_date.weekday() - 4)
-        parse_derivatives_zip(test_date)
+        print(
+            "[*] Manual Override: Scanning local cache for ALL downloaded F&O zips..."
+        )
+
+        if not os.path.exists(CACHE_DIR):
+            print(f"Cache directory {CACHE_DIR} does not exist.")
+        else:
+            # Look for filenames matching nse_fo_bhav_DDMMYYYY.zip
+            zip_files = [
+                f
+                for f in os.listdir(CACHE_DIR)
+                if f.startswith("nse_fo_bhav_") and f.endswith(".zip")
+            ]
+
+            if not zip_files:
+                print("No downloaded F&O zip files found in the offline cache.")
+            else:
+                # Extract dates from the filenames to parse them in chronological order
+                found_dates = []
+                for file_name in zip_files:
+                    match = re.search(
+                        r"nse_fo_bhav_(\d{2})(\d{2})(\d{4})\.zip", file_name
+                    )
+                    if match:
+                        day, month, year = match.groups()
+                        dt = datetime(int(year), int(month), int(day))
+                        found_dates.append(dt)
+
+                print(
+                    f"[+] Found {len(found_dates)} historical zips locally. Rebuilding derivatives matrix..."
+                )
+
+                # Sort chronologically so yesterday's PCR values align for Change_In_OI_PCR calculations
+                for current_date in sorted(found_dates):
+                    parse_derivatives_zip(current_date)
+
+                print("\nHISTORICAL MATRIX PARSING COMPLETE.")

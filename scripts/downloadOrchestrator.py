@@ -174,11 +174,12 @@ def trigger_delta_sync():
     if fiidii_start <= today:
         run_targeted_script("fiiDiiBackfill.py", fiidii_start, today)
 
-    print("\n[✔] DELTA DOWNLOADS COMPLETE.")
+    print("\nDELTA DOWNLOADS COMPLETE.")
 
     # 3. Immediately trigger the parser to process the new data
     print("\n[3] Triggering Parser...")
-    run_isolated_script("bhavcopyParser.py")  # Uncomment this when ready
+    run_isolated_script("bhavcopyParser.py")
+    run_targeted_script("derivativesParser.py", bhavcopy_start, today)
 
 
 if __name__ == "__main__":
