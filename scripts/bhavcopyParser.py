@@ -64,7 +64,7 @@ def push_to_bhavcopy_metrics(df):
         with engine.begin() as conn:
             for record in records:
                 conn.execute(upsert_query, record)
-        print("    [✔] SUCCESS: Metrics successfully updated.")
+        print(" SUCCESS: Metrics successfully updated.")
     except Exception as e:
         print(f" DATABASE ERROR:\n{e}")
 
@@ -204,7 +204,9 @@ def parse_nse_bhavcopies(cash_path, fo_path, master_short_df, target_date):
             if "TCKRSYMB" in fo_df.columns:
                 # --- NEW ISO FORMAT ---
                 ticker_col = fo_df["TCKRSYMB"].str.strip()
-                expiry_col = pd.to_datetime(fo_df["XPRYDT"], format="mixed")
+                expiry_col = pd.to_datetime(
+                    fo_df["XPRYDT"], format="mixed", dayfirst=True
+                )
                 close_col = pd.to_numeric(fo_df["CLSPRIC"], errors="coerce")
                 oi_col_raw = pd.to_numeric(fo_df["OPNINTRST"], errors="coerce")
                 inst_type_col = fo_df.apply(
@@ -218,7 +220,9 @@ def parse_nse_bhavcopies(cash_path, fo_path, master_short_df, target_date):
             else:
                 # --- OLD FORMAT ---
                 ticker_col = fo_df["SYMBOL"].str.strip()
-                expiry_col = pd.to_datetime(fo_df["EXPIRY_DT"], format="mixed")
+                expiry_col = pd.to_datetime(
+                    fo_df["EXPIRY_DT"], format="mixed", dayfirst=True
+                )
                 close_col = pd.to_numeric(fo_df["CLOSE"], errors="coerce")
                 oi_col_raw = pd.to_numeric(fo_df["OPEN_INT"], errors="coerce")
                 inst_type_col = fo_df.apply(
@@ -337,9 +341,9 @@ def load_master_short_data():
         master_sh["Quantity"].astype(str).str.replace(",", "").astype(float)
     )
     # format='mixed' handles the 16-JUN-2023 format effortlessly
-    master_sh["Date"] = pd.to_datetime(master_sh["Date"], format="mixed").dt.strftime(
-        "%Y-%m-%d"
-    )
+    master_sh["Date"] = pd.to_datetime(
+        master_sh["Date"], format="mixed", dayfirst=True
+    ).dt.strftime("%Y-%m-%d")
 
     # Group by Date and Symbol to ensure no duplicates if chunks overlap
     master_sh = master_sh.groupby(["Date", "Symbol"])["Quantity"].sum().reset_index()

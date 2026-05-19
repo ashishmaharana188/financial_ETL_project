@@ -23,7 +23,8 @@ import plotly.graph_objects as go
 from scripts.ratioAnalysis import fetch_piotroski_f_score, fetch_beneish_m_score
 from plotly.subplots import make_subplots
 from scripts.macroAnalysis import Phase2_OLS_Engine, MacroMomentumTracker
-from scripts.downloadOrchestrator import trigger_full_sync, trigger_delta_sync
+import subprocess
+import sys
 
 st.set_page_config(
     page_title="Swarm Intelligence Platform",
@@ -64,26 +65,59 @@ if app_mode == "ETL Control Center":
 
     st.subheader("Data Pipeline Controls")
 
-    # Use columns to put the buttons side-by-side
-    col1, col2 = st.columns(2)
+    def run_orchestrator(mode, start=None, end=None):
+        cmd = [
+            sys.executable,
+            "-u",
+            "-m",
+            "scripts.downloadOrchestrator",
+            "--mode",
+            mode,
+        ]
+        if start and end:
+            cmd.extend(["--start", start, "--end", end])
+        subprocess.run(cmd)
+
+    st.subheader("Database & File Orchestration")
+
+    # --- UI Layout: 3 Columns ---
+    col1, col2, col3 = st.columns(3)
 
     with col1:
-        # Button 1: The Daily Catch-Up (Delta Bridge)
-        if st.button("Run Daily Catch-Up (Delta Bridge)", use_container_width=False):
-            with st.spinner(
-                "Executing Delta Bridge... (Check terminal for real-time progress)"
-            ):
-                trigger_delta_sync()
-            st.success("Delta Sync complete! Database is up to date.")
+        st.markdown("**1. Daily Catch-Up**")
+        if st.button("Run Delta Bridge", use_container_width=True):
+            with st.spinner("Executing Delta Bridge..."):
+                run_orchestrator("delta")
+            st.success("Delta Sync complete!")
 
     with col2:
-        # Button 2: The Master Sync (Full Download)
-        if st.button("Run Master Data Sync (Full)", use_container_width=False):
-            with st.spinner(
-                "Executing Full Master Sync... (Check terminal for real-time progress)"
-            ):
-                trigger_full_sync()
-            st.success("Master Sync complete! Full historical foundation rebuilt.")
+        st.markdown("**2. Master DB Sync**")
+        if st.button("Run Master Parse Sync", use_container_width=True):
+            with st.spinner("Executing Master DB Parse..."):
+                run_orchestrator("parse_all")
+            st.success("Master Parse complete!")
+
+    with col3:
+        st.markdown("**3. File Scraper Engine**")
+
+        # Custom Date Range Picker for the Scraper
+        scrape_dates = st.date_input(
+            "Optional Custom Date Range (Leave default for full timeline)",
+            value=(),
+            key="scrape_dates",
+        )
+
+        if st.button("Run Scrapers", use_container_width=True):
+            with st.spinner("Executing Scrapers..."):
+                if len(scrape_dates) == 2:
+                    # Custom Dates Selected
+                    start_str = scrape_dates[0].strftime("%Y-%m-%d")
+                    end_str = scrape_dates[1].strftime("%Y-%m-%d")
+                    run_orchestrator("scrape", start=start_str, end=end_str)
+                else:
+                    # Default (no specific dates)
+                    run_orchestrator("scrape")
+            st.success("Scraping complete! Files saved to cache.")
 
     if st.button("Run Macro Pipeline", type="secondary", key="macro_start_button"):
         with st.spinner("Executing hybrid spigots... Check terminal for logs."):

@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 from sqlalchemy import text
-from database import engine
+from scripts.database import engine
 
 CACHE_DIR = "offline_data_cache/master_archives"
 

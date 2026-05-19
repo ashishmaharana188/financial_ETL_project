@@ -12,144 +12,82 @@ from scripts.database import engine
 # =====================================================================
 # CORE SUBPROCESS EXECUTION ENGINES
 # =====================================================================
-def run_isolated_script(script_name):
+def run_isolated_script(script_name, extra_args=None):
     """
     Runs a python script in a completely isolated sub-process.
-    This guarantees Cloudflare sees the exact same memory footprint
-    as when you run it manually from your terminal.
     """
     print(f"\n{'='*50}")
     print(f"LAUNCHING ISOLATED PIPELINE: {script_name}")
     print(f"{'='*50}\n")
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(current_dir)  # Step out to the main project folder
+    project_root = os.path.dirname(current_dir)
     script_path = os.path.join(current_dir, script_name)
 
     if not os.path.exists(script_path):
         print(f"[!] Error: Could not find {script_path}")
         return False
 
-    # Build the module name (e.g., 'scripts.bhavcopyParser')
     module_name = f"scripts.{script_name.replace('.py', '')}"
+    cmd = [sys.executable, "-u", "-m", module_name]
 
-    # Run it EXACTLY like the terminal: python -m scripts.filename
+    if extra_args:
+        cmd.extend(extra_args)
+
     process = subprocess.Popen(
-        [sys.executable, "-m", module_name],
+        cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
         universal_newlines=True,
-        cwd=project_root,  # Force execution from the root directory
+        cwd=project_root,
     )
 
-    for line in process.stdout:
+    for line in iter(process.stdout.readline, ""):
         print(line, end="")
+    process.stdout.close()
+    return_code = process.wait()
 
-    process.wait()
-
-    if process.returncode != 0:
-        print(f"\n[!] ERROR: {script_name} crashed (Exit Code {process.returncode}).")
+    if return_code != 0:
+        print(f"\n[!] Pipeline {script_name} failed with exit code {return_code}")
         return False
-    else:
-        print(f"\n[+] SUCCESS: {script_name} completed.")
-        return True
+    return True
 
 
 def run_targeted_script(script_name, start_date, end_date):
+    """Runs a script with specific --start and --end boundary arguments."""
+    args = ["--start", start_date, "--end", end_date]
+    return run_isolated_script(script_name, args)
+
+
+def get_max_date_from_db(table_name, date_column="ReportDate", overlap_days=2):
     """
-    Fires the isolated subprocess with targeted CLI dates for Delta Catchup.
+    Queries the database for the most recent date and applies a safety overlap.
+    By default, it rolls back 2 days to heal any data fragmentation caused by terminal crashes.
     """
-    print(f"\n{'='*50}")
-    print(f"LAUNCHING TARGETED SYNC: {script_name}")
-    print(f"Target Window: {start_date} to {end_date}")
-    print(f"{'='*50}\n")
-
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(current_dir)  # Step out to the main project folder
-    script_path = os.path.join(current_dir, script_name)
-
-    if not os.path.exists(script_path):
-        print(f"[!] Error: Could not find {script_path}")
-        return False
-
-    # Build the module name (e.g., 'scripts.nseScrape')
-    module_name = f"scripts.{script_name.replace('.py', '')}"
-
-    process = subprocess.Popen(
-        [sys.executable, "-m", module_name, "--start", start_date, "--end", end_date],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        universal_newlines=True,
-        cwd=project_root,  # Force execution from the root directory
-    )
-
-    for line in process.stdout:
-        print(line, end="")
-
-    process.wait()
-    return process.returncode == 0
-
-
-# =====================================================================
-# DELTA BRIDGE HELPER FUNCTIONS
-# =====================================================================
-def get_max_date_from_db(table_name, date_column="ReportDate", default_days_back=10):
-    """
-    Safely asks the database for the maximum date for a specific metric.
-    If the table is empty or fails, defaults to a safe fallback.
-    """
+    query = text(f'SELECT MAX("{date_column}") FROM {table_name}')
     try:
-        query = text(f'SELECT MAX("{date_column}") FROM {table_name}')
         with engine.connect() as conn:
             result = conn.execute(query).scalar()
-
             if result:
-                # Return the day AFTER the last recorded date to avoid downloading duplicates
-                next_date = pd.to_datetime(result) + timedelta(days=1)
-                return next_date.strftime("%Y-%m-%d")
-            else:
-                return (datetime.now() - timedelta(days=default_days_back)).strftime(
-                    "%Y-%m-%d"
-                )
+                # IDEMPOTENT HEALING: Go back 2 days instead of jumping forward
+                safe_start_date = pd.to_datetime(result) - timedelta(days=overlap_days)
+                return safe_start_date.strftime("%Y-%m-%d")
     except Exception as e:
-        print(
-            f"[!] Warning: Could not read {table_name}. Returning default start date. ({e})"
-        )
-        return (datetime.now() - timedelta(days=default_days_back)).strftime("%Y-%m-%d")
+        print(f"[-] Could not fetch max date from {table_name}: {e}")
+
+    # Default fallback if table is completely empty
+    return (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
 
 
 # =====================================================================
-# DASHBOARD ENTRY POINTS
+# SYNC LOGIC: 3 DISTINCT MODES
 # =====================================================================
-def trigger_full_sync():
-    """
-    Called by the Dashboard's 'Full Sync' button.
-    Runs the three independent scrapers sequentially using default horizons.
-    """
-    print("=" * 50)
-    print("INITIATING MASTER DASHBOARD SYNC (FULL OVERRIDE)")
-    print("=" * 50)
-
-    pipeline_scripts = ["nseScrape.py", "nseArchiveLooper.py", "fiiDiiBackfill.py"]
-
-    for script in pipeline_scripts:
-        success = run_isolated_script(script)
-        if not success:
-            print(f"\n[!] Pipeline halted due to failure in {script}.")
-            return
-
-    print("\n[✔] ALL PIPELINES EXECUTED AND DATA SYNCED SUCCESSFULLY.")
 
 
 def trigger_delta_sync():
-    """
-    Called by the Dashboard's 'Daily Update' button.
-    Checks the DB and only downloads the specific missing dates.
-    """
+    """MODE 1: Daily Catch-Up (Scrape missing, then parse missing)"""
     print("=" * 50)
     print("INITIATING DELTA BRIDGE (DAILY CATCH-UP)")
     print("=" * 50)
@@ -157,45 +95,80 @@ def trigger_delta_sync():
     today = datetime.now().strftime("%Y-%m-%d")
 
     print("\n[1] Checking Database for missing dates...")
-    bhavcopy_start = get_max_date_from_db("market_bhavcopy_metrics", "ReportDate")
-    smart_money_start = (
-        bhavcopy_start  # Assuming you want smart money synced to the same max date
-    )
-    fiidii_start = bhavcopy_start  # Assuming FII/DII is synced to the same max date
+    bhavcopy_start = get_max_date_from_db("market_bhavcopy_metrics")
+    derivatives_start = get_max_date_from_db("derivatives_matrix")
 
     print("\n[2] Executing targeted downloads...")
-
     if bhavcopy_start <= today:
-        run_targeted_script("nseArchiveLooper.py", bhavcopy_start, today)
+        run_targeted_script("nseScrape.py", bhavcopy_start, today)
+        run_targeted_script("fiiDiiBackfill.py", bhavcopy_start, today)
 
-    if smart_money_start <= today:
-        run_targeted_script("nseScrape.py", smart_money_start, today)
+    if derivatives_start <= today:
+        run_targeted_script("nseArchiveLooper.py", derivatives_start, today)
 
-    if fiidii_start <= today:
-        run_targeted_script("fiiDiiBackfill.py", fiidii_start, today)
+    print("\n[3] Triggering Targeted Parsers...")
+    run_isolated_script("bhavcopyParser.py")  # Internally defaults to daily bridge
+    run_targeted_script("derivativesParser.py", derivatives_start, today)
 
-    print("\nDELTA DOWNLOADS COMPLETE.")
-
-    # 3. Immediately trigger the parser to process the new data
-    print("\n[3] Triggering Parser...")
-    run_isolated_script("bhavcopyParser.py")
-    run_targeted_script("derivativesParser.py", bhavcopy_start, today)
+    print("\n[✔] DELTA SYNC COMPLETE.")
 
 
+def trigger_parse_all():
+    """MODE 2: Master Data Sync (Parses local cache to DB, NO SCRAPING)"""
+    print("=" * 50)
+    print("INITIATING MASTER PARSE SYNC (LOCAL CACHE -> DB)")
+    print("=" * 50)
+
+    print("\n[1] Executing Bulk Parsing for Equities & Commodities...")
+    run_isolated_script("bhavcopyParser.py", ["bulk"])
+
+    print("\n[2] Executing Bulk Parsing for F&O Derivatives...")
+    run_isolated_script("derivativesParser.py")  # Runs standalone cache scan
+
+    print("\n[✔] MASTER PARSE SYNC COMPLETE.")
+
+
+def trigger_scrape(start_dt=None, end_dt=None):
+    """MODE 3: Scraper Only (Downloads files based on default or custom dates)"""
+    print("=" * 50)
+    print("INITIATING SCRAPER PIPELINE")
+    print("=" * 50)
+
+    if start_dt and end_dt:
+        print(f"\n[*] Custom Date Range Detected: {start_dt} to {end_dt}")
+        run_targeted_script("nseScrape.py", start_dt, end_dt)
+        run_targeted_script("nseArchiveLooper.py", start_dt, end_dt)
+        run_targeted_script("fiiDiiBackfill.py", start_dt, end_dt)
+    else:
+        print("\n[*] No custom dates provided. Running default historical scrapers...")
+        run_isolated_script("nseScrape.py")
+        run_isolated_script("nseArchiveLooper.py")
+        run_isolated_script("fiiDiiBackfill.py")
+
+    print("\n[✔] SCRAPE COMPLETE. Files are resting in the local cache.")
+
+
+# =====================================================================
+# EXECUTION ENTRY POINT
+# =====================================================================
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--mode",
-        type=str,
-        choices=["full", "delta"],
-        default="delta",
-        help="Choose sync mode",
+        "--mode", choices=["delta", "parse_all", "scrape"], required=True
+    )
+    parser.add_argument(
+        "--start", type=str, help="Start date for custom scrape (YYYY-MM-DD)"
+    )
+    parser.add_argument(
+        "--end", type=str, help="End date for custom scrape (YYYY-MM-DD)"
     )
     args = parser.parse_args()
 
-    if args.mode == "full":
-        trigger_full_sync()
-    else:
+    if args.mode == "delta":
         trigger_delta_sync()
+    elif args.mode == "parse_all":
+        trigger_parse_all()
+    elif args.mode == "scrape":
+        trigger_scrape(args.start, args.end)

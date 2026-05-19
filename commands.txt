@@ -3,6 +3,10 @@ streamlit run dashboard.py
 python -m scripts.statementScrape
 pip install -r requirements.txt
 
+// run parsers
+python scripts/bhavcopyParser.py bulk
+python scripts/derivativesParser.py
+
 
 "USD_INR"
 "US_Dollar_Index"

@@ -7,16 +7,11 @@ import time
 
 
 def register_discovered_tickers(tickers, data_source="auto"):
-    """
-    Acts as an interceptor for the ETL pipeline.
-    Safely upserts discovered tickers into market_metadata.
-    """
+
     if not tickers:
         return
 
-    print(
-        f"\n[METADATA JUNCTION] Registering discovered client tickers from {data_source.upper()}..."
-    )
+    print(f"\nRegistering discovered client tickers from {data_source.upper()}...")
     records = []
 
     for ticker in tickers:
