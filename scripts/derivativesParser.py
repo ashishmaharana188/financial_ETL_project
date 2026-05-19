@@ -12,13 +12,17 @@ CACHE_DIR = "offline_data_cache/master_archives"
 def get_yesterday_pcr(target_date):
     """
     Fetches the OI_PCR from the most recent trading day prior to the target_date
-    so we can calculate the exact Change_In_OI_PCR.
+    so we can calculate the exact Change_In_OI_PCR, with a strict 7-day threshold.
     """
+    target_dt = pd.to_datetime(target_date)
+    lookback_dt = (target_dt - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
+
     query = text("""
         WITH LastDate AS (
             SELECT MAX("ReportDate") as max_date 
             FROM derivatives_matrix 
             WHERE "ReportDate" < :t_date
+              AND "ReportDate" >= :lookback_date
         )
         SELECT "Ticker", "ExpiryDate", "OI_PCR"
         FROM derivatives_matrix
@@ -28,7 +32,11 @@ def get_yesterday_pcr(target_date):
 
     try:
         with engine.connect() as conn:
-            df_yest = pd.read_sql(query, conn, params={"t_date": target_date})
+            df_yest = pd.read_sql(
+                query,
+                conn,
+                params={"t_date": target_date, "lookback_date": lookback_dt},
+            )
             if not df_yest.empty:
                 # Convert ExpiryDate to datetime for safe merging
                 df_yest["ExpiryDate"] = pd.to_datetime(df_yest["ExpiryDate"])
@@ -145,19 +153,19 @@ def parse_derivatives_zip(target_date):
 
     # 1. Base Formatting
     fo_df["TCKRSYMB"] = fo_df["TCKRSYMB"].str.strip()
-    fo_df["XPRYDT"] = pd.to_datetime(fo_df["XPRYDT"])
+    fo_df["XPRYDT"] = pd.to_datetime(fo_df["XPRYDT"], format="mixed", dayfirst=True)
 
     # Create the core raw matrix
     raw_df = pd.DataFrame(
         {
             "Ticker": fo_df["TCKRSYMB"],
-            "ReportDate": target_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "ReportDate": target_dt.strftime("%Y-%m-%d 00:00:00"),
             "ExpiryDate": fo_df["XPRYDT"],
             "InstrumentType": fo_df.apply(
                 lambda x: (
                     str(x["OPTNTP"]).strip()
                     if pd.notna(x["OPTNTP"])
-                    and str(x["OPTNTP"]).strip() in ["CE", "PE"]
+                    and str(x["OPTNTP"]).strip() in ["CE", "PE", "CA", "PA"]
                     else "FUT"
                 ),
                 axis=1,
@@ -217,35 +225,44 @@ def parse_derivatives_zip(target_date):
     print("    -> Calculating Futures Rollover...")
     fut_df = raw_df[raw_df["InstrumentType"] == "FUT"].copy()
 
-    # Get total OI for all futures of a given ticker
-    total_fut_oi = (
-        fut_df.groupby("Ticker")["Open_Interest"].sum().reset_index(name="Total_FUT_OI")
-    )
+    if not fut_df.empty:
+        # Get total OI for all futures of a given ticker
+        total_fut_oi = (
+            fut_df.groupby("Ticker")["Open_Interest"]
+            .sum()
+            .reset_index(name="Total_FUT_OI")
+        )
 
-    # Find the nearest expiry for each ticker
-    nearest_expiry = fut_df.loc[fut_df.groupby("Ticker")["ExpiryDate"].idxmin()]
+        # Find the nearest expiry for each ticker
+        nearest_expiry = fut_df.loc[fut_df.groupby("Ticker")["ExpiryDate"].idxmin()]
 
-    # Merge them to calculate rollover: (Total OI - Current Expiry OI) / Total OI * 100
-    rollover_calc = pd.merge(
-        nearest_expiry[["Ticker", "ExpiryDate", "Open_Interest"]],
-        total_fut_oi,
-        on="Ticker",
-    )
-    rollover_calc["Rollover_Percentage"] = (
-        (rollover_calc["Total_FUT_OI"] - rollover_calc["Open_Interest"])
-        / rollover_calc["Total_FUT_OI"].replace(0, np.nan)
-    ) * 100
+        # Merge them to calculate rollover: (Total OI - Current Expiry OI) / Total OI * 100
+        rollover_calc = pd.merge(
+            nearest_expiry[["Ticker", "ExpiryDate", "Open_Interest"]],
+            total_fut_oi,
+            on="Ticker",
+        )
+        rollover_calc["Rollover_Percentage"] = (
+            (rollover_calc["Total_FUT_OI"] - rollover_calc["Open_Interest"])
+            / rollover_calc["Total_FUT_OI"].replace(0, np.nan)
+        ) * 100
+
+        rollover_cols = rollover_calc[["Ticker", "ExpiryDate", "Rollover_Percentage"]]
+    else:
+        rollover_cols = pd.DataFrame(
+            columns=["Ticker", "ExpiryDate", "Rollover_Percentage"]
+        )
 
     # 5. Merge Rollover into the Aggregate DataFrame
     agg_df = pd.merge(
         agg_df,
-        rollover_calc[["Ticker", "ExpiryDate", "Rollover_Percentage"]],
+        rollover_cols,
         on=["Ticker", "ExpiryDate"],
-        how="left",
+        how="outer",
     )
 
     # 6. Format Aggregate Rows to match DB Schema
-    agg_df["ReportDate"] = target_dt.strftime("%Y-%m-%d %H:%M:%S")
+    agg_df["ReportDate"] = target_dt.strftime("%Y-%m-%d 00:00:00")
     agg_df["InstrumentType"] = "AGGREGATE"
     agg_df["StrikePrice"] = 0.0
     agg_df["Close_Price"] = None
