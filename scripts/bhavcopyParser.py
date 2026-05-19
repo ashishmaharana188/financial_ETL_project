@@ -39,12 +39,14 @@ def push_to_bhavcopy_metrics(df):
         INSERT INTO market_bhavcopy_metrics (
             "IndicatorName", "ReportDate", "Open", "High", "Low", 
             "Close_Value", "Volume", "Delivery_Percentage", 
-            "Short_Volume", "Cost_Of_Carry", "Open_Interest", "AssetClass"
+            "Short_Volume", "Cost_Of_Carry", "Open_Interest", "AssetClass",
+            "VWAP", "No_Of_Trades"
         )
         VALUES (
             :IndicatorName, :ReportDate, :Open, :High, :Low, 
             :Close_Value, :Volume, :Delivery_Percentage, 
-            :Short_Volume, :Cost_Of_Carry, :Open_Interest, :AssetClass
+            :Short_Volume, :Cost_Of_Carry, :Open_Interest, :AssetClass,
+            :VWAP, :No_Of_Trades
         )
         ON CONFLICT ("IndicatorName", "ReportDate") 
         DO UPDATE SET 
@@ -57,7 +59,9 @@ def push_to_bhavcopy_metrics(df):
             "Short_Volume" = EXCLUDED."Short_Volume",
             "Cost_Of_Carry" = EXCLUDED."Cost_Of_Carry",
             "Open_Interest" = EXCLUDED."Open_Interest",
-            "AssetClass" = EXCLUDED."AssetClass";
+            "AssetClass" = EXCLUDED."AssetClass",
+            "VWAP" = EXCLUDED."VWAP",
+            "No_Of_Trades" = EXCLUDED."No_Of_Trades";
     """)
 
     try:
@@ -89,7 +93,9 @@ def parse_mcx_bhavcopy(mcx_file_path, target_date):
     # Standardize column names to map to DB
     mapped_df = pd.DataFrame(
         {
-            "IndicatorName": df["Symbol"],
+            "IndicatorName": df["Symbol"].str.strip()
+            + "_"
+            + df["ExpiryDate"].str.strip(),
             "ReportDate": pd.to_datetime(target_date).strftime("%Y-%m-%d %H:%M:%S"),
             "Open": df["Open"],
             "High": df["High"],
@@ -101,6 +107,8 @@ def parse_mcx_bhavcopy(mcx_file_path, target_date):
             "Short_Volume": None,
             "Cost_Of_Carry": None,
             "AssetClass": "Commodity",
+            "VWAP": None,
+            "No_Of_Trades": None,
         }
     )
 
@@ -299,6 +307,8 @@ def parse_nse_bhavcopies(cash_path, fo_path, master_short_df, target_date):
             "Cost_Of_Carry": base_df["Cost_Of_Carry"],
             "Open_Interest": base_df["Open_Interest"],
             "AssetClass": base_df["AssetClass"],
+            "VWAP": base_df.get("AVG_PRICE", None),
+            "No_Of_Trades": base_df.get("NO_OF_TRADES", None),
         }
     )
 

@@ -97,6 +97,8 @@ def trigger_delta_sync():
     print("\n[1] Checking Database for missing dates...")
     bhavcopy_start = get_max_date_from_db("market_bhavcopy_metrics")
     derivatives_start = get_max_date_from_db("derivatives_matrix")
+    trades_start = get_max_date_from_db("trade_events_ledger", overlap_days=2)
+    macro_start = get_max_date_from_db("macro_fiidii_cash", overlap_days=2)
 
     print("\n[2] Executing targeted downloads...")
     if bhavcopy_start <= today:
@@ -109,7 +111,8 @@ def trigger_delta_sync():
     print("\n[3] Triggering Targeted Parsers...")
     run_isolated_script("bhavcopyParser.py")  # Internally defaults to daily bridge
     run_targeted_script("derivativesParser.py", derivatives_start, today)
-
+    run_targeted_script("tradeEventsParser.py", trades_start, today)
+    run_targeted_script("participantFIDIParser.py", macro_start, today)
     print("\n[✔] DELTA SYNC COMPLETE.")
 
 
@@ -123,7 +126,13 @@ def trigger_parse_all():
     run_isolated_script("bhavcopyParser.py", ["bulk"])
 
     print("\n[2] Executing Bulk Parsing for F&O Derivatives...")
-    run_isolated_script("derivativesParser.py")  # Runs standalone cache scan
+    run_isolated_script("derivativesParser.py")
+
+    print("\n[3] Executing Bulk Parsing for Institutional Trades...")
+    run_isolated_script("tradeEventsParser.py")
+
+    print("\n[4] Executing Bulk Parsing for Macro Indicators...")
+    run_isolated_script("participantFIDIParser.py")
 
     print("\n[✔] MASTER PARSE SYNC COMPLETE.")
 

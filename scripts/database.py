@@ -27,20 +27,17 @@ metadata = MetaData(schema="public")
 market_metadata = Table(
     "market_metadata",
     metadata,
-    # The actual symbol yfinance or the exchange uses (e.g., '^TNX', 'RELIANCE.NS', 'DX-Y.NYB')
     Column("Ticker", String(50), primary_key=True, index=True),
-    # The translated name used in your macro table (e.g., 'US_10Y_Yield').
-    # Can be NULL for regular equities.
     Column("IndicatorName", String(100), nullable=True),
-    # Tells the Python scraper exactly which table to insert the data into
-    Column(
-        "TargetTable", String(50), nullable=False
-    ),  # 'market_pricing_daily' OR 'macro_indicators'
+    Column("TargetTable", String(50), nullable=False),
+    Column("Sector", String(100)),
+    Column("Industry", String(100)),
     Column(
         "AssetClass", String(50), nullable=False
     ),  # 'Equity', 'Macro_Index', 'Volatility'
     Column("Exchange", String(50)),
     Column("IsActive", Boolean, default=True),
+    Column("valid_data_since", Date),
     Column("Description", String(255)),
 )
 
@@ -88,6 +85,8 @@ market_bhavcopy_metrics = Table(
     Column("Cost_Of_Carry", Float, nullable=True),  # Calculated Spot vs Futures
     Column("Open_Interest", BigInteger, nullable=True),  # For MCX Commodities
     # Asset Classification to prevent pollution
+    Column("VWAP", Float, nullable=True),
+    Column("No_Of_Trades", BigInteger, nullable=True),
     Column(
         "AssetClass", String(50), nullable=False
     ),  # 'Equity', 'ETF', 'SGB', 'Commodity'
@@ -129,16 +128,47 @@ trade_events_ledger = Table(
     Column("AveragePrice", Float, nullable=False),
 )
 
-company_profiles = Table(
-    "company_profiles",
+# ==========================================
+# GROUP 6: MACRO INDICATORS (FII/DII & OI)
+# ==========================================
+
+macro_fiidii_cash = Table(
+    "macro_fiidii_cash",
     metadata,
-    Column("Ticker", String(50), primary_key=True),
-    Column("CompanyName", String(200)),
-    Column("Sector", String(100)),
-    Column("Industry", String(100)),
-    Column("valid_data_since", Date),
+    Column("ReportDate", TIMESTAMP, primary_key=True),
+    Column("FII_Buy_Value", Float),
+    Column("FII_Sell_Value", Float),
+    Column("FII_Net_Value", Float),
+    Column("DII_Buy_Value", Float),
+    Column("DII_Sell_Value", Float),
+    Column("DII_Net_Value", Float),
+    Column("Nifty_Close", Float),  # Capturing this since it's in your file!
 )
 
+macro_participant_oi = Table(
+    "macro_participant_oi",
+    metadata,
+    Column("ReportDate", TIMESTAMP, primary_key=True),
+    Column("ClientType", String(50), primary_key=True),  # 'Client', 'DII', 'FII', 'Pro'
+    # Futures Positioning
+    Column("FutureIndexLong", BigInteger),
+    Column("FutureIndexShort", BigInteger),
+    Column("FutureStockLong", BigInteger),
+    Column("FutureStockShort", BigInteger),
+    # Options Index Positioning
+    Column("OptionIndexCallLong", BigInteger),
+    Column("OptionIndexPutLong", BigInteger),
+    Column("OptionIndexCallShort", BigInteger),
+    Column("OptionIndexPutShort", BigInteger),
+    # Options Stock Positioning
+    Column("OptionStockCallLong", BigInteger),
+    Column("OptionStockPutLong", BigInteger),
+    Column("OptionStockCallShort", BigInteger),
+    Column("OptionStockPutShort", BigInteger),
+    # Totals
+    Column("TotalLongContracts", BigInteger),
+    Column("TotalShortContracts", BigInteger),
+)
 
 ai_forensic_logs = Table(
     "ai_forensic_logs",

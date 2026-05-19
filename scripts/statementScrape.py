@@ -16,7 +16,7 @@ from scripts.reconciliation import extract_mapped_keys, execute_three_way_match
 from scripts.ai_agent import trigger_semantic_router
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
-from scripts.database import engine, raw_financials, company_profiles
+from scripts.database import engine, raw_financials, market_metadata
 from scripts.reconciliation import extract_mapped_keys, execute_three_way_match
 from sqlalchemy import text
 from scripts.modelRuntime import runtime
@@ -572,7 +572,7 @@ def fetch_all_financials(ticker, requested_source="auto"):
 
 
 def update_company_profile(ticker: str):
-    """Fetches Sector/Industry from yfinance and upserts into the database."""
+
     try:
         # Try the base ticker first, then append .NS if it fails or lacks sector data
         tickers_to_try = [ticker, f"{ticker}.NS"]
@@ -600,22 +600,32 @@ def update_company_profile(ticker: str):
             except Exception:
                 info = {}
 
-        # Use .get() so it doesn't crash if a specific stock is missing data
+        # Extract data with safe fallbacks
         sector = info.get("sector", "Unknown")
         industry = info.get("industry", "Unknown")
-        short_name = info.get("shortName", ticker)
+        exchange = info.get("exchange", "Unknown")
+        company_name = info.get("shortName", ticker)
 
-        # PostgreSQL Upsert Logic
-        stmt = insert(company_profiles).values(
-            Ticker=ticker, CompanyName=short_name, Sector=sector, Industry=industry
+        # PostgreSQL Upsert Logic for the new market_metadata schema
+        stmt = insert(market_metadata).values(
+            Ticker=ticker,
+            IndicatorName=company_name,
+            TargetTable="market_pricing_daily",  # Required non-nullable field
+            Sector=sector,
+            Industry=industry,
+            AssetClass="Equity",  # Required non-nullable field
+            Exchange=exchange,
+            IsActive=True,
         )
 
+        # Update fields if the ticker already exists
         stmt = stmt.on_conflict_do_update(
             index_elements=["Ticker"],
             set_={
-                "CompanyName": stmt.excluded.CompanyName,
                 "Sector": stmt.excluded.Sector,
                 "Industry": stmt.excluded.Industry,
+                "IndicatorName": stmt.excluded.IndicatorName,
+                "Exchange": stmt.excluded.Exchange,
             },
         )
 
