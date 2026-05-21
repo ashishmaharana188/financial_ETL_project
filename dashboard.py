@@ -75,20 +75,6 @@ def run_orchestrator(mode, start=None, end=None):
     return process
 
 
-# =====================================================================
-# 1. MACRO DATA CENTER
-# =====================================================================
-
-
-# =====================================================================
-# HELPER: REAL-TIME PIPELINE EXECUTION
-# =====================================================================
-# =====================================================================
-# HELPER: TERMINAL-ONLY PIPELINE EXECUTION
-# =====================================================================
-# =====================================================================
-# HELPER: TERMINAL-ONLY PIPELINE EXECUTION
-# =====================================================================
 def execute_pipeline_live(mode, start_dt=None, end_dt=None):
     """
     Runs the orchestrator as a subprocess.
@@ -125,10 +111,6 @@ def execute_pipeline_live(mode, start_dt=None, end_dt=None):
         st.error(f"Failed to start pipeline: {e}")
 
 
-# =====================================================================
-# UI: DATA CENTER (Replaces the old 'Macro Data' block)
-# =====================================================================
-# Note: Ensure your sidebar navigation array uses "Data Center" instead of "Macro Data"
 if app_mode == "Data Center":
     st.title("Institutional Data Center")
     st.markdown(
@@ -179,7 +161,7 @@ if app_mode == "Data Center":
                 end_dt=scrape_end.strftime("%Y-%m-%d"),
             )
 
-    # --- TAB 3: ISOLATED BULK INGESTION (Replaces old parse_all) ---
+    # --- TAB 3: ISOLATED BULK INGESTION ---
     with tab_ingest:
         st.subheader("Master DB Sync (Dumb Loaders & Alpha Factory)")
         st.markdown("""
@@ -197,16 +179,30 @@ if app_mode == "Data Center":
                 "End Date", value=datetime.now(), key="ingest_end"
             )
 
-        if st.button("Run Master Parse Sync", type="primary"):
+        if st.button("Run Master Parse Sync", type="primary", key="master_sync_btn"):
             execute_pipeline_live(
                 mode="bulk_historic",
                 start_dt=ingest_start.strftime("%Y-%m-%d"),
                 end_dt=ingest_end.strftime("%Y-%m-%d"),
             )
 
-# =====================================================================
-# 2. COMPANY DATA CENTER
-# =====================================================================
+        st.divider()
+        st.subheader("Macro & Global Assets Sync")
+        st.markdown(
+            "Fetch real-time yields, commodities, and global indexes to update the Macro Ledgers."
+        )
+
+        # The clean, isolated 2-liner for Macro Refresh!
+        if st.button(
+            "Trigger Macro Refresh", type="secondary", key="macro_refresh_btn"
+        ):
+            execute_pipeline_live(mode="macro_refresh")
+
+        if st.button(
+            "Trigger Alpha Factory Refresh", type="primary", key="alpha_refresh_btn"
+        ):
+            execute_pipeline_live(mode="alpha_refresh")
+
 elif app_mode == "Company Data":
     st.title("Company Data Center")
     st.markdown(
@@ -369,9 +365,7 @@ elif app_mode == "Company Data":
                     )
                     st.dataframe(clean_df, use_container_width=True)
 
-# =====================================================================
-# 3. QUANTITATIVE ENGINES (MODULAR VIEW)
-# =====================================================================
+
 elif app_mode == "Engines":
     st.title("Quantitative Engines & Deep Dive")
 
@@ -477,9 +471,6 @@ elif app_mode == "Engines":
             # st.markdown("---")
             # render_options_pricing_engine(engine_data...)
 
-# =====================================================================
-# 4. MARKET OVERVIEW
-# =====================================================================
 elif app_mode == "Market Overview":
     st.title("Market Overview")
     st.markdown("Cross-sectional ranking and quadrant analysis.")

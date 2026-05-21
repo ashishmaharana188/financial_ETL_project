@@ -14,6 +14,7 @@ from sqlalchemy import (
     Boolean,
     text,
     Integer,
+    UniqueConstraint,
 )
 import pandas as pd
 from datetime import datetime, timedelta
@@ -41,12 +42,15 @@ market_metadata = Table(
     Column("Description", String(255)),
 )
 
-market_pricing_daily = Table(
-    "market_pricing_daily",
+macro_daily_ledger = Table(
+    "macro_daily_ledger",
     metadata,
-    Column("IndicatorName", String(100), primary_key=True, index=True),
-    Column("ReportDate", TIMESTAMP, primary_key=True, index=True),
-    # The OHLCV columns
+    Column(
+        "IndicatorName", String(100), primary_key=True, index=True
+    ),  # 'US_10Y_Yield'
+    Column(
+        "ReportDate", Date, primary_key=True, index=True
+    ),  # Stored purely as YYYY-MM-DD
     Column("Open", Float, nullable=True),
     Column("High", Float, nullable=True),
     Column("Low", Float, nullable=True),
@@ -54,30 +58,48 @@ market_pricing_daily = Table(
     Column("Volume", BigInteger, nullable=True),
 )
 
-macro_indicators = Table(
-    "macro_indicators",
+macro_intraday_ledger = Table(
+    "macro_intraday_ledger",
     metadata,
-    Column("IndicatorName", String(100), primary_key=True, index=True),
-    Column("ReportDate", TIMESTAMP, primary_key=True, index=True),
+    Column(
+        "IndicatorName", String(100), primary_key=True, index=True
+    ),  # 'US_10Y_Yield'
+    Column(
+        "ReportDate", TIMESTAMP, primary_key=True, index=True
+    ),  # Includes exact Hr:Min:Sec
+    Column("Timeframe", String(10), primary_key=True, index=True),  # '1h', '30m', '5m'
     Column("Open", Float, nullable=True),
     Column("High", Float, nullable=True),
     Column("Low", Float, nullable=True),
     Column("Close_Value", Float, nullable=False),
     Column("Volume", BigInteger, nullable=True),
 )
-from sqlalchemy import (
-    Table,
-    Column,
-    String,
-    Float,
-    BigInteger,
-    Integer,
-    TIMESTAMP,
-    Date,
-    MetaData,
+
+global_assets_daily = Table(
+    "global_assets_daily",
+    metadata,
+    Column("Ticker", String(100), primary_key=True, index=True),
+    Column("ReportDate", Date, primary_key=True, index=True),
+    Column("AssetClass", String(50), nullable=True),  # 'US Equity', 'Index', 'Crypto'
+    Column("Open", Float, nullable=True),
+    Column("High", Float, nullable=True),
+    Column("Low", Float, nullable=True),
+    Column("Close", Float, nullable=False),
+    Column("Volume", BigInteger, nullable=True),
 )
 
-metadata = MetaData()
+global_assets_intraday = Table(
+    "global_assets_intraday",
+    metadata,
+    Column("Ticker", String(100), primary_key=True, index=True),
+    Column("ReportDate", TIMESTAMP, primary_key=True, index=True),
+    Column("Timeframe", String(10), primary_key=True, index=True),
+    Column("Open", Float, nullable=True),
+    Column("High", Float, nullable=True),
+    Column("Low", Float, nullable=True),
+    Column("Close", Float, nullable=False),
+    Column("Volume", BigInteger, nullable=True),
+)
 
 unified_market_master = Table(
     "unified_market_master",
@@ -156,23 +178,30 @@ institutional_ledger = Table(
 trade_events_ledger = Table(
     "trade_events_ledger",
     metadata,
-    # --- SURROGATE PRIMARY KEY (Because multiple trades happen per day) ---
+    # --- SURROGATE PRIMARY KEY ---
     Column("EventID", Integer, primary_key=True, autoincrement=True),
     # --- EVENT METADATA ---
     Column("ReportDate", TIMESTAMP, index=True, nullable=False),
     Column("Ticker", String(50), index=True, nullable=False),
-    Column("EventType", String(50), nullable=False),  # 'Block Deal', 'Bulk Deal'
+    Column("EventType", String(50), nullable=False),
     # --- TRANSACTION DETAILS ---
-    Column("Security_Name", String(255), nullable=True),
-    Column("Client_Name", String(255), nullable=False),  # e.g., 'MORGAN STANLEY ASIA'
-    Column("Transaction_Type", String(20), nullable=False),  # 'BUY' or 'SELL'
-    Column("Quantity", BigInteger, nullable=False),  # 'Quantity Traded'
-    Column("Trade_Price", Float, nullable=False),  # 'Trade Price / Wght. Avg. Price'
+    Column("SecurityName", String(255), nullable=True),
+    Column("ClientName", String(255), nullable=False),
+    Column("TransactionType", String(20), nullable=False),
+    Column("Quantity", BigInteger, nullable=False),
+    Column("TradePrice", Float, nullable=False),
     Column("Remarks", String(255), nullable=True),
+    # --- THE FIX: ENFORCE UNIQUE TRADES FOR UPSERTS ---
+    UniqueConstraint(
+        "ReportDate",
+        "Ticker",
+        "ClientName",
+        "TransactionType",
+        "Quantity",
+        "TradePrice",
+        name="unique_trade_event",
+    ),
 )
-# ==========================================
-# GROUP 6: MACRO INDICATORS (FII/DII & OI)
-# ==========================================
 
 
 ai_forensic_logs = Table(

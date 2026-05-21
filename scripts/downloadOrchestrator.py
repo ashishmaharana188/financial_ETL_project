@@ -9,9 +9,6 @@ import time
 # Import your database engine
 from scripts.database import engine
 
-# =====================================================================
-# PERSISTENT LOGGER SETUP
-# =====================================================================
 LOG_FILE = "pipeline_execution.log"
 
 
@@ -33,9 +30,6 @@ def init_logger(mode):
         f.write("=" * 60 + "\n\n")
 
 
-# =====================================================================
-# CORE SUBPROCESS EXECUTION ENGINE (WITH STRICT HALT)
-# =====================================================================
 def run_isolated_script(script_name, extra_args=None):
     """
     Runs a python script synchronously. If it fails, it returns False.
@@ -83,74 +77,78 @@ def run_isolated_script(script_name, extra_args=None):
     return True
 
 
-# =====================================================================
-# DELTA BRIDGE LOGIC (2-Day Lag Safety Net)
-# =====================================================================
-def get_latest_db_date():
-    dates = []
+def get_domain_watermark(table_name, friendly_name):
+
     try:
         with engine.connect() as conn:
-            # 1. Check Unified Master components
-            try:
-                query_unified = text(
-                    'SELECT "InstrumentType", MAX("ReportDate") FROM unified_market_master GROUP BY "InstrumentType";'
+            # We specifically target the table passed in the argument
+            res = conn.execute(
+                text(f'SELECT MAX("ReportDate") FROM {table_name}')
+            ).scalar()
+            if res:
+                date_val = pd.to_datetime(res).date()
+                write_log(f"[*] {friendly_name} Watermark: {date_val}")
+                return date_val
+    except Exception as e:
+        write_log(f"[-] DB Query Failed for {table_name}: {e}")
+
+    default_date = pd.to_datetime("2015-01-01").date()
+    write_log(
+        f"[*] {friendly_name} Watermark: Not Found (Defaulting to {default_date})"
+    )
+    return default_date
+
+
+def get_events_highest_watermark():
+    """Finds the absolute highest available date across Bulk, Block, and Short Selling."""
+    watermarks = []
+
+    try:
+        with engine.connect() as conn:
+            # 1. Check Trade Events (Bulk & Block)
+            res_events = conn.execute(
+                text('SELECT MAX("ReportDate") FROM trade_events_ledger')
+            ).scalar()
+            if res_events:
+                watermarks.append(pd.to_datetime(res_events).date())
+
+            # 2. Check Short Selling (From Unified Master)
+            res_short = conn.execute(
+                text(
+                    'SELECT MAX("ReportDate") FROM unified_market_master WHERE "Short_Volume" IS NOT NULL'
                 )
-                res_unified = conn.execute(query_unified).fetchall()
-
-                cash_dates = [
-                    pd.to_datetime(r[1]) for r in res_unified if r[0] == "CASH"
-                ]
-                deriv_dates = [
-                    pd.to_datetime(r[1]) for r in res_unified if r[0] != "CASH"
-                ]
-
-                if cash_dates:
-                    msg = f"[*] High-Water Mark (CASH): {max(cash_dates).strftime('%Y-%m-%d')}\n"
-                    write_log(msg)
-                    dates.append(max(cash_dates))
-                if deriv_dates:
-                    msg = f"[*] High-Water Mark (DERIVATIVES): {max(deriv_dates).strftime('%Y-%m-%d')}\n"
-                    write_log(msg)
-                    dates.append(max(deriv_dates))
-            except Exception as e:
-                write_log(f"[-] Could not read unified_market_master: {e}\n")
-
-            # 2. Check Institutional Ledger
-            try:
-                query_inst = text('SELECT MAX("ReportDate") FROM institutional_ledger;')
-                res_inst = conn.execute(query_inst).scalar()
-                if res_inst:
-                    dt = pd.to_datetime(res_inst)
-                    dates.append(dt)
-                    write_log(
-                        f"[*] High-Water Mark (INSTITUTIONAL): {dt.strftime('%Y-%m-%d')}\n"
-                    )
-            except Exception:
-                pass
-
-            # 3. Find the Weakest Link
-            if dates:
-                weakest_link_date = min(dates)
-                write_log(
-                    f"[*] Weakest Link Detected: Restarting bridge from {weakest_link_date.strftime('%Y-%m-%d')} to ensure no missing files.\n"
-                )
-                return weakest_link_date
+            ).scalar()
+            if res_short:
+                watermarks.append(pd.to_datetime(res_short).date())
 
     except Exception as e:
-        write_log(f"[-] Database error during high-water mark check: {e}\n")
+        write_log(f"[-] DB Query Failed for Trade Events: {e}")
 
-    return None
+    # Return the HIGHEST date found
+    if watermarks:
+        highest_date = max(watermarks)
+        write_log(f"[*] Trade Events (Strongest Link) Watermark: {highest_date}")
+        return highest_date
+
+    default_date = pd.to_datetime("2015-01-01").date()
+    write_log(f"[*] Trade Events Watermark: Not Found (Defaulting to {default_date})")
+    return default_date
 
 
-# =====================================================================
-# EXECUTION ENTRY POINT
-# =====================================================================
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--mode", choices=["delta", "bulk_historic", "scrape_only"], required=True
+        "--mode",
+        choices=[
+            "delta",
+            "bulk_historic",
+            "scrape_only",
+            "macro_refresh",
+            "alpha_refresh",
+        ],
+        required=True,
     )
     parser.add_argument("--start", type=str)
     parser.add_argument("--end", type=str)
@@ -159,45 +157,46 @@ if __name__ == "__main__":
     init_logger(args.mode)
 
     if args.mode == "delta":
-        latest_date = get_latest_db_date()
-        end_dt_str = datetime.now().strftime("%Y-%m-%d")
+        write_log("=== INITIATING DOMAIN-ISOLATED DELTA BRIDGE ===\n")
 
-        if not latest_date:
-            write_log(
-                "[*] Database appears empty. Defaulting Delta Bridge to genesis date (2015-01-01).\n"
-            )
-            start_dt_str = "2015-01-01"
-        else:
-            lag_date = latest_date - timedelta(days=2)
-            start_dt_str = lag_date.strftime("%Y-%m-%d")
-            write_log(
-                f"[*] Applying 2-Day Overlap Lag. Delta Bridge starting from: {start_dt_str}\n"
-            )
+        today_str = pd.Timestamp.today().strftime("%Y-%m-%d")
 
-        date_args = ["--start", start_dt_str, "--end", end_dt_str]
+        write_log("--- DOMAIN 1: MARKET DATA ---")
+        market_date = get_domain_watermark("unified_market_master", "Market Data")
+        market_start = (market_date - pd.Timedelta(days=2)).strftime("%Y-%m-%d")
 
-        write_log("\n--- PHASE 1: SEQUENTIAL EXTRACTION ---\n")
-        if not run_isolated_script("nseScrape.py", date_args):
+        write_log(f"    -> Fetching & Parsing: {market_start} to {today_str}\n")
+        if not run_isolated_script(
+            "nseArchiveLooper.py", ["--start", market_start, "--end", today_str]
+        ):
             sys.exit(1)
-        if not run_isolated_script("nseArchiveLooper.py", date_args):
-            sys.exit(1)
-        if not run_isolated_script("fiiDiiBackfill.py", date_args):
+        if not run_isolated_script("ingestUnifiedMatrix.py", ["--start", market_start]):
             sys.exit(1)
 
-        write_log("\n--- PHASE 2: SEQUENTIAL INGESTION (DUMB LOADERS) ---\n")
-        loader_args = ["--start", start_dt_str]
-        if not run_isolated_script("ingestUnifiedMatrix.py", loader_args):
+        events_date = get_events_highest_watermark()
+        events_start = (events_date - pd.Timedelta(days=2)).strftime("%Y-%m-%d")
+
+        write_log(f"    -> Fetching & Parsing: {events_start} to {today_str}\n")
+        if not run_isolated_script(
+            "nseScrape.py", ["--start", events_start, "--end", today_str]
+        ):
             sys.exit(1)
-        if not run_isolated_script("ingestInstitutional.py", loader_args):
-            sys.exit(1)
-        if not run_isolated_script("ingestEvents.py", loader_args):
+        if not run_isolated_script("ingestEvents.py", ["--start", events_start]):
             sys.exit(1)
 
-        write_log("\n--- PHASE 3: ALPHA FACTORY REFRESH ---\n")
-        if not run_isolated_script("materializedViewEngine.py", ["--refresh"]):
+        write_log("\n--- DOMAIN 3: INSTITUTIONAL FLOWS ---")
+        fii_date = get_domain_watermark("institutional_ledger", "Institutional Flows")
+        fii_start = (fii_date - pd.Timedelta(days=2)).strftime("%Y-%m-%d")
+
+        write_log(f"    -> Fetching & Parsing: {fii_start} to {today_str}\n")
+        if not run_isolated_script(
+            "fiiDiiBackfill.py", ["--start", fii_start, "--end", today_str]
+        ):
+            sys.exit(1)
+        if not run_isolated_script("ingestInstitutional.py", ["--start", fii_start]):
             sys.exit(1)
 
-        write_log("\n[✔] DELTA BRIDGE COMPLETE.\n")
+        write_log("\n  ALL DOMAINS SYNCED SUCCESSFULLY.\n")
 
     elif args.mode == "bulk_historic":
         write_log(f"[*] Triggering ISOLATED Master Ingestion (Bypassing Scrapers)\n")
@@ -212,7 +211,7 @@ if __name__ == "__main__":
         if not run_isolated_script("ingestEvents.py", ui_args):
             sys.exit(1)
 
-        write_log("\n[✔] BULK INGESTION COMPLETE.\n")
+        write_log("\n  BULK INGESTION COMPLETE.\n")
 
     elif args.mode == "scrape_only":
         write_log(
@@ -228,4 +227,22 @@ if __name__ == "__main__":
         if not run_isolated_script("fiiDiiBackfill.py", date_args):
             sys.exit(1)
 
-        write_log("\n[✔] ISOLATED SCRAPE COMPLETE.\n")
+        write_log("\n  ISOLATED SCRAPE COMPLETE.\n")
+
+    elif args.mode == "macro_refresh":
+        write_log(f"[*] Triggering ISOLATED Macro & Global Asset Pipeline\n")
+
+        write_log("\n--- PHASE 1: MACRO SCRAPE & DB UPSERT ---\n")
+        if not run_isolated_script("macroScrape.py"):
+            sys.exit(1)
+
+        write_log("\n  MACRO PIPELINE COMPLETE.\n")
+
+    elif args.mode == "alpha_refresh":
+        write_log(f"\n[*] Triggering ISOLATED Alpha Factory Refresh\n")
+
+        write_log("\n--- REBUILDING MATERIALIZED VIEWS ---\n")
+        if not run_isolated_script("materializedViewEngine.py", ["--refresh"]):
+            sys.exit(1)
+
+        write_log("\nALPHA FACTORY REFRESH COMPLETE.\n")

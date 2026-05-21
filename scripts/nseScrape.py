@@ -97,27 +97,67 @@ def run_5_year_backfill():
     print("\n=== 5-Year Backfill Complete ===")
 
 
+def generate_yearly_chunks(start_date, end_date):
+    """
+    Yields clean Jan 1 to Dec 31 chunks to prevent cache fragmentation.
+    If the requested span is short (Delta Bridge), it yields the exact gap.
+    """
+    current = pd.to_datetime(start_date)
+    end = pd.to_datetime(end_date)
+
+    while current <= end:
+        # DELTA BRIDGE LOGIC: If span is short and within the same year, fetch the exact gap.
+        if (end - current).days < 365 and current.year == end.year:
+            yield current.strftime("%d-%m-%Y"), end.strftime("%d-%m-%Y")
+            break
+
+        # BULK HISTORIC LOGIC: Force the chunk to end on Dec 31st of the current year.
+        year_end = pd.to_datetime(f"{current.year}-12-31")
+
+        # Cap it if we are in the final year of the requested span
+        if year_end > end:
+            year_end = end
+
+        yield current.strftime("%d-%m-%Y"), year_end.strftime("%d-%m-%Y")
+
+        # Step forward to Jan 1st of the next year
+        current = year_end + pd.Timedelta(days=1)
+
+
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--start", type=str, help="Start date YYYY-MM-DD")
-    parser.add_argument("--end", type=str, help="End date YYYY-MM-DD")
+    parser.add_argument(
+        "--start", type=str, help="Start date YYYY-MM-DD", default="2015-01-01"
+    )
+    parser.add_argument(
+        "--end",
+        type=str,
+        help="End date YYYY-MM-DD",
+        default=datetime.now().strftime("%Y-%m-%d"),
+    )
     args = parser.parse_args()
 
-    if args.start and args.end:
-        start_dt = pd.to_datetime(args.start)
-        end_dt = pd.to_datetime(args.end)
+    print(f"\n[*] Initiating Trade Events Extraction ({args.start} to {args.end})...")
 
-        print(f"=== Running Delta Sync: {args.start} to {args.end} ===")
-        fetcher = NSEFetcher()
-        deal_types = ["bulk_deals", "block_deals", "short_selling"]
+    fetcher = NSEFetcher()
+    deal_types = ["bulk_deals", "block_deals", "short_selling"]
 
-        str_end = end_dt.strftime("%d-%m-%Y")
-        str_start = start_dt.strftime("%d-%m-%Y")
+    # Use the smart chunker to prevent messy overlapping files in the cache
+    for chunk_start, chunk_end in generate_yearly_chunks(args.start, args.end):
+        print(f"\n    -> Fetching Event Chunk: {chunk_start} to {chunk_end}")
 
         for d_type in deal_types:
-            fetcher.fetch_historical_deals(d_type, str_start, str_end)
-            time.sleep(4)
-    else:
-        run_5_year_backfill()  # Falls back to bulk if no dates provided
+            filename = f"nse_{d_type}_{chunk_start}_to_{chunk_end}.csv"
+            filepath = os.path.join(CACHE_DIR, filename)
+
+            if not os.path.exists(filepath):
+                fetcher.fetch_historical_deals(d_type, chunk_start, chunk_end)
+                time.sleep(4)  # Respect rate limits between files
+            else:
+                print(
+                    f"       [SKIPPED] {d_type} {chunk_start} to {chunk_end} already exists."
+                )
+
+    print("\n[SUCCESS] NSE Smart Extraction Complete.")

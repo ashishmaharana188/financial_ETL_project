@@ -3,7 +3,7 @@
 
 venv/
 env/
-
+pipeline_execution.log
 __pycache__/
 *.py[cod]
 *$py.class

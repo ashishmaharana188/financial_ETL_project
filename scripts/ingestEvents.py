@@ -4,8 +4,11 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 from sqlalchemy import text
-from scripts.database import engine  # Ensure this points to your SQLAlchemy engine
+from scripts.database import engine
 import re
+import io
+import uuid
+from sqlalchemy.dialects.postgresql import insert
 
 CACHE_DIR = "offline_data_cache/master_archives"
 
@@ -17,22 +20,17 @@ def clean_for_db(df):
 
 
 def parse_trade_events(file_path, event_type):
-    # Read CSV (using latin1 encoding as NSE files sometimes contain hidden characters)
     df = pd.read_csv(file_path, encoding="latin1")
-
-    # Aggressively clean header names (strip spaces and invisible characters)
     df.columns = (
         df.columns.str.replace("ï»¿", "", regex=False)
         .str.replace("\ufeff", "", regex=False)
         .str.strip()
     )
-
-    # Ensure dataframe is not empty
     if df.empty:
         return pd.DataFrame()
 
-    df["ReportDate"] = pd.to_datetime(df["Date"], format="%d-%b-%Y")
-
+    df["ReportDate"] = pd.to_datetime(df["Date"], format="%d-%b-%Y", errors="coerce")
+    df = df.dropna(subset=["ReportDate"])
     df["EventType"] = event_type
 
     df["Quantity Traded"] = (
@@ -42,67 +40,120 @@ def parse_trade_events(file_path, event_type):
 
     price_col = "Trade Price / Wght. Avg. Price"
     if price_col not in df.columns:
-        price_col = "Trade Price / Wtd. Avg. Price"  # Alternative NSE spelling
+        price_col = "Trade Price / Wght. Avg. Price "
 
-    df[price_col] = df[price_col].astype(str).str.replace(",", "", regex=False)
-    df[price_col] = pd.to_numeric(df[price_col], errors="coerce")
-
-    # 4. Map directly to our Database Schema
-    col_mapping = {
-        "Symbol": "Ticker",
-        "Security Name": "Security_Name",
-        "Client Name": "Client_Name",
-        "Buy / Sell": "Transaction_Type",
-        "Quantity Traded": "Quantity",
-        price_col: "Trade_Price",
-        "Remarks": "Remarks",
-    }
-
-    df = df.rename(columns=col_mapping)
-
-    # Ensure Remarks column exists even if missing in file
-    if "Remarks" not in df.columns:
-        df["Remarks"] = None
+    if price_col in df.columns:
+        df[price_col] = df[price_col].astype(str).str.replace(",", "", regex=False)
+        df["TradePrice"] = pd.to_numeric(df[price_col], errors="coerce")
     else:
-        # Replace empty dashes '-' with actual Nulls
-        df["Remarks"] = df["Remarks"].replace("-", None)
+        df["TradePrice"] = None
 
+    df = df.rename(
+        columns={
+            "Symbol": "Ticker",
+            "Security Name": "SecurityName",
+            "Client Name": "ClientName",
+            "Buy / Sell": "TransactionType",
+            "Quantity Traded": "Quantity",
+            "Remarks": "Remarks",
+        }
+    )
     return df
 
 
+def push_chunk_to_db(df):
+    if df.empty:
+        return
+
+    # 1. Exact Match to your SQLAlchemy Model (Case-Sensitive)
+    final_columns = [
+        "ReportDate",
+        "Ticker",
+        "EventType",
+        "SecurityName",
+        "ClientName",
+        "TransactionType",
+        "Quantity",
+        "TradePrice",
+        "Remarks",
+    ]
+
+    for col in final_columns:
+        if col not in df.columns:
+            df[col] = None
+
+    df = df[final_columns]
+    df = clean_for_db(df)
+
+    # 2. In-memory deduplication
+    pk_cols = [
+        "ReportDate",
+        "Ticker",
+        "ClientName",
+        "TransactionType",
+        "Quantity",
+        "TradePrice",
+    ]
+    df = df.drop_duplicates(subset=pk_cols, keep="last")
+
+    print(f"    -> [BULK PUSH] Upserting {len(df)} rows into 'trade_events_ledger'...")
+
+    # Notice: NO lowercasing hack here. We leave the DataFrame columns as CamelCase.
+
+    # 3. Define the Native PostgreSQL Upsert Logic
+    def postgres_upsert(table, conn, keys, data_iter):
+        data = [dict(zip(keys, row)) for row in data_iter]
+        insert_stmt = insert(table.table).values(data)
+
+        upsert_stmt = insert_stmt.on_conflict_do_nothing(
+            constraint="unique_trade_event"
+        )
+        conn.execute(upsert_stmt)
+
+    # 4. Execute using native Pandas integration
+    try:
+        df.to_sql(
+            "trade_events_ledger",
+            con=engine,
+            if_exists="append",
+            index=False,
+            chunksize=5000,
+            method=postgres_upsert,
+        )
+    except Exception as e:
+        print(f"    [-] CRITICAL Bulk Push Error: {e}")
+
+
 def execute_events_pipeline(start_date_str="1900-01-01"):
+
     resume_date = pd.to_datetime(start_date_str).date()
 
     bulk_files = glob.glob(os.path.join(CACHE_DIR, "nse_bulk_deals_*.csv"))
     block_files = glob.glob(os.path.join(CACHE_DIR, "nse_block_deals_*.csv"))
 
-    total_bulk = len(bulk_files)
-    total_block = len(block_files)
-
-    print(f"[*] Discovered Data: {total_bulk} Bulk files | {total_block} Block files.")
+    print(
+        f"[*] Discovered Data: {len(bulk_files)} Bulk files | {len(block_files)} Block files."
+    )
     print(f"[*] Resume Checkpoint: {resume_date}")
 
-    def extract_date(filepath):
-        match = re.search(r"(\d{8})", filepath)
+    def extract_end_date(filepath):
+        """Looks for the end date in names like: nse_bulk_deals_09-05-2026_to_20-05-2026.csv"""
+        match = re.search(r"_to_(\d{2}-\d{2}-\d{4})\.csv", filepath)
         if match:
-            return pd.to_datetime(match.group(1), format="%d%m%Y").date()
-        return pd.to_datetime("1900-01-01").date()
-
-    bulk_files = sorted(bulk_files, key=extract_date)
-    block_files = sorted(block_files, key=extract_date)
+            return pd.to_datetime(
+                match.group(1), format="%d-%m-%Y", errors="coerce"
+            ).date()
+        return pd.to_datetime("2099-12-31").date()
 
     all_dataframes = []
 
     # Process Bulk Deals
     for idx, file in enumerate(bulk_files, 1):
-        file_date = extract_date(file)
-
-        # INCREMENTAL SKIP LOGIC
-        if file_date < resume_date:
+        if extract_end_date(file) < resume_date:
             continue
 
         print(
-            f"[*] Parsing Bulk Deal [ {idx} / {total_bulk} ] : {os.path.basename(file)}"
+            f"[*] Parsing Bulk Deal [ {idx} / {len(bulk_files)} ] : {os.path.basename(file)}"
         )
         parsed_df = parse_trade_events(file, "Bulk Deal")
         if not parsed_df.empty:
@@ -110,51 +161,30 @@ def execute_events_pipeline(start_date_str="1900-01-01"):
 
     # Process Block Deals
     for idx, file in enumerate(block_files, 1):
-        file_date = extract_date(file)
-
-        if file_date < resume_date:
+        if extract_end_date(file) < resume_date:
             continue
 
         print(
-            f"[*] Parsing Block Deal [ {idx} / {total_block} ] : {os.path.basename(file)}"
+            f"[*] Parsing Block Deal [ {idx} / {len(block_files)} ] : {os.path.basename(file)}"
         )
         parsed_df = parse_trade_events(file, "Block Deal")
         if not parsed_df.empty:
             all_dataframes.append(parsed_df)
 
-    # Combine into the Ledger
     if not all_dataframes:
-        print("[-] No trade events found to process (or all skipped). Aborting.")
+        print("  No new trade events to process. DB is up to date.")
         return
 
     master_events_df = pd.concat(all_dataframes, ignore_index=True)
-
-    final_columns = [
-        "ReportDate",
-        "Ticker",
-        "EventType",
-        "Security_Name",
-        "Client_Name",
-        "Transaction_Type",
-        "Quantity",
-        "Trade_Price",
-        "Remarks",
+    master_events_df = master_events_df[
+        master_events_df["ReportDate"].dt.date >= resume_date
     ]
 
-    master_events_df = master_events_df[final_columns]
-    master_events_df = clean_for_db(master_events_df)
+    if master_events_df.empty:
+        print("  All parsed events are older than the resume checkpoint.")
+        return
 
-    print(
-        f"\n[DB PUSH] Loading {len(master_events_df)} rows into 'trade_events_ledger'..."
-    )
-    master_events_df.to_sql(
-        "trade_events_ledger",
-        con=engine,
-        if_exists="append",
-        index=False,
-        chunksize=10000,
-        method="multi",
-    )
+    push_chunk_to_db(master_events_df)
     print("[SUCCESS] Trade Events Ledger Update Complete.")
 
 
@@ -164,5 +194,4 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", type=str, default="1900-01-01")
     args = parser.parse_args()
-
     execute_events_pipeline(args.start)
