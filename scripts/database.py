@@ -65,110 +65,115 @@ macro_indicators = Table(
     Column("Close_Value", Float, nullable=False),
     Column("Volume", BigInteger, nullable=True),
 )
+from sqlalchemy import (
+    Table,
+    Column,
+    String,
+    Float,
+    BigInteger,
+    Integer,
+    TIMESTAMP,
+    Date,
+    MetaData,
+)
 
-market_bhavcopy_metrics = Table(
-    "market_bhavcopy_metrics",
+metadata = MetaData()
+
+unified_market_master = Table(
+    "unified_market_master",
     metadata,
-    Column(
-        "IndicatorName", String(100), primary_key=True, index=True
-    ),  # Ticker or Commodity Name
+    # --- COMPOSITE PRIMARY KEY (Prevents Overwriting) ---
+    Column("Ticker", String(100), primary_key=True, index=True),
     Column("ReportDate", TIMESTAMP, primary_key=True, index=True),
-    # Standard OHLCV (Used for MCX, ETFs, SGBs)
+    Column(
+        "InstrumentType", String(20), primary_key=True, index=True
+    ),  # 'CASH', 'FUTSTK', 'OPTIDX', 'FUTCOM', etc.
+    # NOTE: SQL databases do not allow NULL in Primary Keys.
+    # For CASH/Spot assets, your parser should insert a dummy date (e.g., '2099-12-31')
+    # and a strike of 0.0 to safely store them alongside derivatives.
+    Column("ExpiryDate", Date, primary_key=True, index=True),
+    Column("StrikePrice", Float, primary_key=True),
+    # --- STANDARD OHLCV ---
     Column("Open", Float, nullable=True),
     Column("High", Float, nullable=True),
     Column("Low", Float, nullable=True),
-    Column("Close_Value", Float, nullable=True),
-    Column("Volume", BigInteger, nullable=True),
-    # The Bhavcopy Extensions (For Equities/Indices)
-    Column("Delivery_Percentage", Float, nullable=True),
-    Column("Short_Volume", BigInteger, nullable=True),  # From nse_short_selling.csv
-    Column("Cost_Of_Carry", Float, nullable=True),  # Calculated Spot vs Futures
-    Column("Open_Interest", BigInteger, nullable=True),  # For MCX Commodities
-    # Asset Classification to prevent pollution
-    Column("VWAP", Float, nullable=True),
-    Column("No_Of_Trades", BigInteger, nullable=True),
+    Column("Close", Float, nullable=True),
     Column(
-        "AssetClass", String(50), nullable=False
-    ),  # 'Equity', 'ETF', 'SGB', 'Commodity'
+        "Volume", BigInteger, nullable=True
+    ),  # 'TTL_TRD_QNTY', 'CONTRACTS', 'Volume'
+    # --- CASH MARKET ALPHA (nse_cash & nse_short_selling) ---
+    Column("Exchange_Series", String(10), nullable=True),  # 'EQ', 'BE'
+    Column("Turnover", Float, nullable=True),  # 'TURNOVER_LACS', 'VAL_INLAKH', 'Value'
+    Column(
+        "No_Of_Trades", BigInteger, nullable=True
+    ),  # 'NO_OF_TRADES', 'TtlNbOfTxsExctd'
+    Column("Delivery_Qty", BigInteger, nullable=True),  # 'DELIV_QTY'
+    Column("Delivery_Percentage", Float, nullable=True),  # 'DELIV_PER'
+    Column("Short_Volume", BigInteger, nullable=True),  # 'Quantity' from short selling
+    # --- DERIVATIVES ALPHA (F&O & MCX) ---
+    Column("OptionType", String(10), nullable=True),  # 'CE', 'PE'
+    Column(
+        "Open_Interest", BigInteger, nullable=True
+    ),  # 'OpnIntrst', 'OPEN_INT', 'OpenInterest'
+    Column("Change_In_OI", BigInteger, nullable=True),  # 'ChngInOpnIntrst', 'CHG_IN_OI'
+    Column("Settlement_Price", Float, nullable=True),  # 'SttlmPric', 'SETTLE_PR'
+    Column("Underlying_Price", Float, nullable=True),  # 'UndrlygPric'
 )
 
-derivatives_matrix = Table(
-    "derivatives_matrix",
+
+institutional_ledger = Table(
+    "institutional_ledger",
     metadata,
-    Column("Ticker", String(50), primary_key=True, index=True),
+    # --- COMPOSITE PRIMARY KEY ---
     Column("ReportDate", TIMESTAMP, primary_key=True, index=True),
-    Column("ExpiryDate", Date, primary_key=True, index=True),  # e.g., '2026-05-28'
-    # 'FUT', 'CE', 'PE', or 'AGGREGATE' (for PCR/Rollover)
-    Column("InstrumentType", String(20), primary_key=True, index=True),
-    # 0.0 for Futures or Aggregates
-    Column("StrikePrice", Float, primary_key=True),
-    # The Matrix Values
-    Column("Close_Price", Float, nullable=True),
-    Column("Open_Interest", BigInteger, nullable=True),
-    Column("Change_In_OI", BigInteger, nullable=True),
-    Column("Volume", BigInteger, nullable=True),
-    # Aggregate Metrics (Populated only when InstrumentType = 'AGGREGATE')
-    Column("OI_PCR", Float, nullable=True),
-    Column("Change_In_OI_PCR", Float, nullable=True),
-    Column("Volume_PCR", Float, nullable=True),
-    Column("Rollover_Percentage", Float, nullable=True),
+    Column(
+        "ClientType", String(50), primary_key=True, index=True
+    ),  # 'FII', 'DII', 'Pro', 'Client'
+    # --- CASH FLOW METRICS (From NiftyTrader FII/DII) ---
+    # Will only be populated when ClientType is 'FII' or 'DII'
+    Column("Cash_Buy_Value", Float, nullable=True),
+    Column("Cash_Sell_Value", Float, nullable=True),
+    Column("Cash_Net_Value", Float, nullable=True),
+    Column("Nifty_Close", Float, nullable=True),
+    # --- DERIVATIVE CONTRACT METRICS (From nse_part_oi) ---
+    # Populated for all Client Types
+    Column("Future_Index_Long", BigInteger, nullable=True),
+    Column("Future_Index_Short", BigInteger, nullable=True),
+    Column("Future_Stock_Long", BigInteger, nullable=True),
+    Column("Future_Stock_Short", BigInteger, nullable=True),
+    Column("Option_Index_Call_Long", BigInteger, nullable=True),
+    Column("Option_Index_Put_Long", BigInteger, nullable=True),
+    Column("Option_Index_Call_Short", BigInteger, nullable=True),
+    Column("Option_Index_Put_Short", BigInteger, nullable=True),
+    Column("Option_Stock_Call_Long", BigInteger, nullable=True),
+    Column("Option_Stock_Put_Long", BigInteger, nullable=True),
+    Column("Option_Stock_Call_Short", BigInteger, nullable=True),
+    Column("Option_Stock_Put_Short", BigInteger, nullable=True),
+    Column("Total_Long_Contracts", BigInteger, nullable=True),
+    Column("Total_Short_Contracts", BigInteger, nullable=True),
 )
 
 trade_events_ledger = Table(
     "trade_events_ledger",
     metadata,
-    Column("EventID", Integer, primary_key=True, autoincrement=True),  # Surrogate PK
+    # --- SURROGATE PRIMARY KEY (Because multiple trades happen per day) ---
+    Column("EventID", Integer, primary_key=True, autoincrement=True),
+    # --- EVENT METADATA ---
     Column("ReportDate", TIMESTAMP, index=True, nullable=False),
     Column("Ticker", String(50), index=True, nullable=False),
-    # The Event Details
-    Column("EventType", String(50), nullable=False),  # 'Bulk Deal', 'Block Deal'
-    Column("ClientName", String(255), nullable=False),
-    Column("TransactionType", String(20), nullable=False),  # 'BUY' or 'SELL'
-    Column("Quantity", BigInteger, nullable=False),
-    Column("AveragePrice", Float, nullable=False),
+    Column("EventType", String(50), nullable=False),  # 'Block Deal', 'Bulk Deal'
+    # --- TRANSACTION DETAILS ---
+    Column("Security_Name", String(255), nullable=True),
+    Column("Client_Name", String(255), nullable=False),  # e.g., 'MORGAN STANLEY ASIA'
+    Column("Transaction_Type", String(20), nullable=False),  # 'BUY' or 'SELL'
+    Column("Quantity", BigInteger, nullable=False),  # 'Quantity Traded'
+    Column("Trade_Price", Float, nullable=False),  # 'Trade Price / Wght. Avg. Price'
+    Column("Remarks", String(255), nullable=True),
 )
-
 # ==========================================
 # GROUP 6: MACRO INDICATORS (FII/DII & OI)
 # ==========================================
 
-macro_fiidii_cash = Table(
-    "macro_fiidii_cash",
-    metadata,
-    Column("ReportDate", TIMESTAMP, primary_key=True),
-    Column("FII_Buy_Value", Float),
-    Column("FII_Sell_Value", Float),
-    Column("FII_Net_Value", Float),
-    Column("DII_Buy_Value", Float),
-    Column("DII_Sell_Value", Float),
-    Column("DII_Net_Value", Float),
-    Column("Nifty_Close", Float),  # Capturing this since it's in your file!
-)
-
-macro_participant_oi = Table(
-    "macro_participant_oi",
-    metadata,
-    Column("ReportDate", TIMESTAMP, primary_key=True),
-    Column("ClientType", String(50), primary_key=True),  # 'Client', 'DII', 'FII', 'Pro'
-    # Futures Positioning
-    Column("FutureIndexLong", BigInteger),
-    Column("FutureIndexShort", BigInteger),
-    Column("FutureStockLong", BigInteger),
-    Column("FutureStockShort", BigInteger),
-    # Options Index Positioning
-    Column("OptionIndexCallLong", BigInteger),
-    Column("OptionIndexPutLong", BigInteger),
-    Column("OptionIndexCallShort", BigInteger),
-    Column("OptionIndexPutShort", BigInteger),
-    # Options Stock Positioning
-    Column("OptionStockCallLong", BigInteger),
-    Column("OptionStockPutLong", BigInteger),
-    Column("OptionStockCallShort", BigInteger),
-    Column("OptionStockPutShort", BigInteger),
-    # Totals
-    Column("TotalLongContracts", BigInteger),
-    Column("TotalShortContracts", BigInteger),
-)
 
 ai_forensic_logs = Table(
     "ai_forensic_logs",
@@ -366,41 +371,3 @@ yearly_indirect_cash_flow = Table(
 # Create all tables
 metadata.create_all(engine)
 print("All tables validated and created successfully.")
-
-
-def get_missing_dates(table_name):
-    """
-    Queries the database for the most recent date in a given table,
-    and returns a list of missing business days up to today.
-    """
-    # Using double quotes around ReportDate to respect PostgreSQL case sensitivity
-    query = text(f'SELECT MAX("ReportDate") FROM {table_name};')
-
-    try:
-        with engine.connect() as conn:
-            result = conn.execute(query).scalar()
-
-        if result is None:
-            print(f"[*] Table {table_name} is empty. Bulk load required.")
-            return []
-
-        last_db_date = pd.to_datetime(result).date()
-        today = datetime.today().date()
-
-        if last_db_date >= today:
-            print(f"[*] {table_name} is fully up to date ({last_db_date}).")
-            return []
-
-        # Generate business days (B) between last_db_date (exclusive) and today (inclusive)
-        # We add 1 day to last_db_date so we don't re-process the exact day we already have.
-        start_date = last_db_date + timedelta(days=1)
-        missing_b_days = pd.bdate_range(start=start_date, end=today).date.tolist()
-
-        print(
-            f"[*] {table_name}: Found {len(missing_b_days)} missing business days between {last_db_date} and {today}."
-        )
-        return missing_b_days
-
-    except Exception as e:
-        print(f"[-] Error checking missing dates for {table_name}: {e}")
-        return []

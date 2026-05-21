@@ -6,6 +6,7 @@ from scripts.statementScrape import run_etl_pipeline
 from scripts.macroScrape import run_macro_pipeline, register_discovered_tickers
 import subprocess
 import sys
+from datetime import datetime, timedelta
 
 # Import new isolated UI modules
 from scripts.engines.companyMetrics import render_company_metrics
@@ -26,7 +27,7 @@ st.sidebar.divider()
 
 app_mode = st.sidebar.radio(
     "NAVIGATION MENU",
-    ["Macro Data", "Company Data", "Engines", "Market Overview"],
+    ["Data Center", "Company Data", "Engines", "Market Overview"],
     key="main_nav_radio",
 )
 
@@ -66,65 +67,142 @@ def run_orchestrator(mode, start=None, end=None):
     ]
     if start and end:
         cmd.extend(["--start", start, "--end", end])
-    subprocess.run(cmd)
+
+    # Changed from subprocess.run to Popen to allow real-time log streaming
+    process = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+    )
+    return process
 
 
 # =====================================================================
 # 1. MACRO DATA CENTER
 # =====================================================================
-if app_mode == "Macro Data":
-    st.title("Macro Data Center")
-    st.markdown(
-        "Dedicated space for macro scraping, delta bridge, and data management."
+
+
+# =====================================================================
+# HELPER: REAL-TIME PIPELINE EXECUTION
+# =====================================================================
+# =====================================================================
+# HELPER: TERMINAL-ONLY PIPELINE EXECUTION
+# =====================================================================
+# =====================================================================
+# HELPER: TERMINAL-ONLY PIPELINE EXECUTION
+# =====================================================================
+def execute_pipeline_live(mode, start_dt=None, end_dt=None):
+    """
+    Runs the orchestrator as a subprocess.
+    Logs are pushed strictly to the terminal to prevent Streamlit DOM freezing.
+    """
+    import subprocess
+    import sys
+
+    cmd = [sys.executable, "-u", "-m", "scripts.downloadOrchestrator", "--mode", mode]
+
+    if start_dt and end_dt:
+        cmd.extend(["--start", start_dt, "--end", end_dt])
+
+    # 1. UI Feedback: Tell the user to look at the terminal
+    st.info(
+        f" Pipeline '{mode}' initialized. Please check your terminal for live execution logs."
     )
 
-    st.subheader("Database & File Orchestration")
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.markdown("**1. Daily Catch-Up**")
-        if st.button("Run Delta Bridge", use_container_width=False):
-            with st.spinner("Executing Delta Bridge..."):
-                run_orchestrator("delta")
-            st.success("Delta Sync complete!")
-
-    with col2:
-        st.markdown("**2. Master DB Sync**")
-        if st.button("Run Master Parse Sync", use_container_width=False):
-            with st.spinner("Executing Master DB Parse..."):
-                run_orchestrator("parse_all")
-            st.success("Master Parse complete!")
-
-    with col3:
-        st.markdown("**3. File Scraper Engine**")
-        scrape_dates = st.date_input(
-            "Optional Custom Date Range (Leave default for full timeline)",
-            value=(),
-            key="scrape_dates",
+    try:
+        # 2. Run the process (Output naturally flows to the terminal where Streamlit was launched)
+        process = subprocess.run(
+            cmd, text=True, check=False  # We handle the return code manually below
         )
 
-        if st.button("Run Scrapers", use_container_width=False):
-            with st.spinner("Executing Scrapers..."):
-                if len(scrape_dates) == 2:
-                    start_str = scrape_dates[0].strftime("%Y-%m-%d")
-                    end_str = scrape_dates[1].strftime("%Y-%m-%d")
-                    run_orchestrator("scrape", start=start_str, end=end_str)
-                else:
-                    run_orchestrator("scrape")
-            st.success("Scraping complete! Files saved to cache.")
+        # 3. UI Feedback: Final Status
+        if process.returncode == 0:
+            st.success(f"Pipeline '{mode}' executed successfully!")
+        else:
+            st.error(
+                f"Pipeline '{mode}' failed with exit code {process.returncode}. Check terminal for errors."
+            )
 
-    if st.button("Run Macro Pipeline", type="secondary", key="macro_start_button"):
-        with st.spinner("Executing hybrid spigots... Check terminal for logs."):
-            try:
-                success, row_count = run_macro_pipeline()
-                if success:
-                    st.success(
-                        f"Macro Pipeline Complete! {row_count} daily records upserted."
-                    )
-                else:
-                    st.warning("Pipeline executed but no data was extracted.")
-            except Exception as e:
-                st.error(f"Macro pipeline crashed during execution: {e}")
+    except Exception as e:
+        st.error(f"Failed to start pipeline: {e}")
+
+
+# =====================================================================
+# UI: DATA CENTER (Replaces the old 'Macro Data' block)
+# =====================================================================
+# Note: Ensure your sidebar navigation array uses "Data Center" instead of "Macro Data"
+if app_mode == "Data Center":
+    st.title("Institutional Data Center")
+    st.markdown(
+        "Manage the Extraction, Transformation, and Loading (ETL) of market data."
+    )
+
+    tab_delta, tab_scrape, tab_ingest = st.tabs(
+        [
+            "Delta Bridge (Daily Sync)",
+            "Isolated Bulk Scraper",
+            "Master DB Sync",
+        ]
+    )
+
+    # --- TAB 1: DELTA BRIDGE ---
+    with tab_delta:
+        st.subheader("Delta Bridge Protocol")
+        st.markdown("""
+        The Delta Bridge automatically checks the database for the latest available date, applies a **2-day overlap safety lag**, and scrapes/parses all missing data up to today. 
+        It finishes by refreshing the **Alpha Factory** (Materialized Views).
+        """)
+
+        if st.button("Trigger Delta Bridge Synchronizer", type="primary"):
+            execute_pipeline_live(mode="delta")
+
+    # --- TAB 2: ISOLATED BULK SCRAPER ---
+    with tab_scrape:
+        st.subheader("Mass Historical Extraction")
+        st.markdown(
+            "Downloads raw zip/csv files to the `offline_data_cache` without touching the database."
+        )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            # Default to 2015 genesis
+            scrape_start = st.date_input(
+                "Start Date", value=pd.to_datetime("2015-01-01"), key="scrape_start"
+            )
+        with col2:
+            scrape_end = st.date_input(
+                "End Date", value=datetime.now(), key="scrape_end"
+            )
+
+        if st.button("Run Scrapers Only"):
+            execute_pipeline_live(
+                mode="scrape_only",
+                start_dt=scrape_start.strftime("%Y-%m-%d"),
+                end_dt=scrape_end.strftime("%Y-%m-%d"),
+            )
+
+    # --- TAB 3: ISOLATED BULK INGESTION (Replaces old parse_all) ---
+    with tab_ingest:
+        st.subheader("Master DB Sync (Dumb Loaders & Alpha Factory)")
+        st.markdown("""
+        Bypasses scrapers and pushes all files currently sitting in the `offline_data_cache` into the **Unified Master**, **Macro**, and **Ledger** tables. 
+        It finishes by rebuilding the **Alpha Factory**.
+        """)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            ingest_start = st.date_input(
+                "Start Date", value=pd.to_datetime("2015-01-01"), key="ingest_start"
+            )
+        with col2:
+            ingest_end = st.date_input(
+                "End Date", value=datetime.now(), key="ingest_end"
+            )
+
+        if st.button("Run Master Parse Sync", type="primary"):
+            execute_pipeline_live(
+                mode="bulk_historic",
+                start_dt=ingest_start.strftime("%Y-%m-%d"),
+                end_dt=ingest_end.strftime("%Y-%m-%d"),
+            )
 
 # =====================================================================
 # 2. COMPANY DATA CENTER

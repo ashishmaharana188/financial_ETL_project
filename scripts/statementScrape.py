@@ -20,14 +20,13 @@ from scripts.database import engine, raw_financials, market_metadata
 from scripts.reconciliation import extract_mapped_keys, execute_three_way_match
 from sqlalchemy import text
 from scripts.modelRuntime import runtime
-from scripts.modelRuntime import runtime
 from scripts.vectorize import get_top_buckets
 from scripts.reasoning import analyze_key_with_phi3
 import streamlit as st
 from datetime import datetime
 from scripts.edgarUtils import backfill_structural_breaks
 
-runtime.load_models()
+# runtime.load_models()
 
 # vantage api key
 # vantage api key
@@ -1741,7 +1740,8 @@ def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
     try:
         # Boot the PyTorch/Ollama engine if running locally
         if ai_mode == "local":
-            runtime.load_models()
+            # runtime.load_models()
+            print(f"local")
 
         for ticker in target_tickers:
             # FETCH UNIFIED PAYLOAD
