@@ -75,6 +75,26 @@ macro_intraday_ledger = Table(
     Column("Volume", BigInteger, nullable=True),
 )
 
+# --- ADD THIS BLOCK TO YOUR EXISTING TABLE DEFINITIONS ---
+prediction_ledger = Table(
+    "prediction_ledger",
+    metadata,
+    Column("engine_name", String, primary_key=True),
+    Column("ticker", String, primary_key=True),
+    Column("asof_date", Date, primary_key=True),
+    Column("horizon", String, primary_key=True),  # e.g., '2D', '5D', '20D'
+    Column("signal", String),  # 'BUY', 'WATCH', 'AVOID', 'SHORT-BIAS'
+    Column("score", Float),  # Normalized score (e.g., -1.0 to 1.0)
+    Column("confidence", Float),  # 0.0 to 1.0
+    Column("veto_flag", Boolean, default=False),
+    Column("penalty", Float, default=0.0),
+    Column("target_metric", String),  # Expected return band
+    Column("reason_json", JSONB),  # Text explanation of drivers
+    Column("feature_json", JSONB),  # Raw input metrics
+    Column("data_quality_score", Float),
+    Column("created_at", DateTime, default=datetime.utcnow),
+)
+
 global_assets_daily = Table(
     "global_assets_daily",
     metadata,

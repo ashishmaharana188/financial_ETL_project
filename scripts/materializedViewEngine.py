@@ -6,38 +6,36 @@ from scripts.database import engine  # Ensure this points to your SQLAlchemy eng
 
 def build_materialized_views():
     """
-    Creates the high-performance Materialized Views directly inside the database.
-    These views automatically calculate PCR and Cost of Carry from the raw unified matrix.
+    Clears old structures and creates high-performance Materialized Views.
     """
     print("[*] Initializing the Database Alpha Factory...")
 
-    # =====================================================================
-    # VIEW 1: OPTIONS AGGREGATES (PCR & Volume Flow)
-    # Automatically calculates Put/Call Ratios per Ticker, Date, and Expiry.
-    # =====================================================================
+    teardown_queries = [
+        "DROP MATERIALIZED VIEW IF EXISTS unified_market_matrix CASCADE;",
+        "DROP MATERIALIZED VIEW IF EXISTS mv_options_aggregates CASCADE;",
+        "DROP MATERIALIZED VIEW IF EXISTS mv_spot_futures_basis CASCADE;",
+        "DROP MATERIALIZED VIEW IF EXISTS mv_institutional_flow CASCADE;",
+    ]
+
     query_pcr_view = """
-    CREATE MATERIALIZED VIEW IF NOT EXISTS mv_options_aggregates AS
+    CREATE MATERIALIZED VIEW mv_options_aggregates AS
     SELECT 
         "Ticker",
         "ReportDate",
         "ExpiryDate",
         
-        -- Aggregate Open Interest
         SUM(CASE WHEN "OptionType" = 'PE' THEN "Open_Interest" ELSE 0 END) AS "Total_Put_OI",
         SUM(CASE WHEN "OptionType" = 'CE' THEN "Open_Interest" ELSE 0 END) AS "Total_Call_OI",
         
-        -- OI PCR Calculation (Prevents Divide by Zero)
         CASE 
             WHEN SUM(CASE WHEN "OptionType" = 'CE' THEN "Open_Interest" ELSE 0 END) = 0 THEN NULL
             ELSE SUM(CASE WHEN "OptionType" = 'PE' THEN "Open_Interest" ELSE 0 END)::FLOAT / 
                  SUM(CASE WHEN "OptionType" = 'CE' THEN "Open_Interest" ELSE 0 END)
         END AS "OI_PCR",
         
-        -- Aggregate Volume
         SUM(CASE WHEN "OptionType" = 'PE' THEN "Volume" ELSE 0 END) AS "Total_Put_Volume",
         SUM(CASE WHEN "OptionType" = 'CE' THEN "Volume" ELSE 0 END) AS "Total_Call_Volume",
         
-        -- Volume PCR Calculation
         CASE 
             WHEN SUM(CASE WHEN "OptionType" = 'CE' THEN "Volume" ELSE 0 END) = 0 THEN NULL
             ELSE SUM(CASE WHEN "OptionType" = 'PE' THEN "Volume" ELSE 0 END)::FLOAT / 
@@ -45,16 +43,12 @@ def build_materialized_views():
         END AS "Volume_PCR"
         
     FROM unified_market_master
-    WHERE "InstrumentType" LIKE 'OPT%'  -- Filter strictly for Options
+    WHERE "InstrumentType" LIKE 'OPT%'
     GROUP BY "Ticker", "ReportDate", "ExpiryDate";
     """
 
-    # =====================================================================
-    # VIEW 2: SPOT-FUTURES BASIS (Cost of Carry)
-    # Measures the premium/discount of Futures compared to the Cash Equity
-    # =====================================================================
     query_basis_view = """
-    CREATE MATERIALIZED VIEW IF NOT EXISTS mv_spot_futures_basis AS
+    CREATE MATERIALIZED VIEW mv_spot_futures_basis AS
     WITH CashData AS (
         SELECT "Ticker", "ReportDate", "Close" AS "Spot_Price"
         FROM unified_market_master
@@ -74,7 +68,6 @@ def build_materialized_views():
         f."Open_Interest",
         (f."Futures_Price" - c."Spot_Price") AS "Absolute_Basis",
         
-        -- Percentage Basis (Annualized Cost of Carry can be derived from this)
         CASE 
             WHEN c."Spot_Price" = 0 THEN NULL
             ELSE ((f."Futures_Price" - c."Spot_Price") / c."Spot_Price") * 100 
@@ -87,7 +80,7 @@ def build_materialized_views():
     """
 
     query_inst_flow_view = """
-    CREATE MATERIALIZED VIEW IF NOT EXISTS mv_institutional_flow AS
+    CREATE MATERIALIZED VIEW mv_institutional_flow AS
     WITH NetPositions AS (
         SELECT 
             "ReportDate", 
@@ -125,28 +118,94 @@ def build_materialized_views():
     FROM NetPositions;
     """
 
-    # --- INDEXES FOR MILLISECOND QUERY SPEEDS ---
+    query_unified_matrix_view = """
+        CREATE MATERIALIZED VIEW unified_market_matrix AS
+        WITH CashBase AS (
+            SELECT 
+                "Ticker" AS ticker,
+                "ReportDate"::DATE AS date,
+                "Close" AS close,
+                "Volume" AS volume,
+                "Delivery_Percentage" AS delivery_percentage
+            FROM unified_market_master
+            WHERE "InstrumentType" = 'CASH'
+        ),
+        DailyPCR AS (
+            SELECT 
+                "Ticker" AS ticker,
+                "ReportDate"::DATE AS date,
+                CASE 
+                    WHEN SUM("Total_Call_OI") = 0 THEN NULL
+                    ELSE SUM("Total_Put_OI")::FLOAT / SUM("Total_Call_OI")
+                END AS oi_pcr
+            FROM mv_options_aggregates
+            GROUP BY "Ticker", "ReportDate"
+        ),
+        DailyPCRWithDelta AS (
+            SELECT 
+                ticker,
+                date,
+                oi_pcr,
+                -- CALCULATE THE DELTA (ΔOI PCR) BEFORE THE FINAL JUNCTION JOIN
+                oi_pcr - LAG(oi_pcr) OVER (PARTITION BY ticker ORDER BY date) AS delta_oi_pcr
+            FROM DailyPCR
+        ),
+        NearMonthBasis AS (
+            SELECT DISTINCT ON ("Ticker", "ReportDate")
+                "Ticker" AS ticker,
+                "ReportDate"::DATE AS date,
+                "Absolute_Basis" AS futures_basis
+            FROM mv_spot_futures_basis
+            ORDER BY "Ticker", "ReportDate", "Open_Interest" DESC
+        )
+        SELECT 
+            c.ticker,
+            c.date,
+            c.close,
+            c.volume,
+            c.delivery_percentage,
+            COALESCE(p.oi_pcr, 0.0) AS oi_pcr,
+            COALESCE(p.delta_oi_pcr, 0.0) AS delta_oi_pcr,
+            COALESCE(b.futures_basis, 0.0) AS futures_basis
+        FROM CashBase c
+        LEFT JOIN DailyPCRWithDelta p ON c.ticker = p.ticker AND c.date = p.date
+        LEFT JOIN NearMonthBasis b ON c.ticker = b.ticker AND c.date = b.date;
+        """
+
     indexes = [
         'CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_opt_pcr ON mv_options_aggregates ("Ticker", "ReportDate", "ExpiryDate");',
         'CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_basis ON mv_spot_futures_basis ("Ticker", "ReportDate", "ExpiryDate");',
         'CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_inst_flow ON mv_institutional_flow ("ReportDate", "ClientType");',
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_unified_matrix ON unified_market_matrix (ticker, date);",
         'CREATE INDEX IF NOT EXISTS idx_mv_opt_date ON mv_options_aggregates ("ReportDate");',
         'CREATE INDEX IF NOT EXISTS idx_mv_basis_date ON mv_spot_futures_basis ("ReportDate");',
         'CREATE INDEX IF NOT EXISTS idx_mv_inst_date ON mv_institutional_flow ("ReportDate");',
+        "CREATE INDEX IF NOT EXISTS idx_mv_matrix_date ON unified_market_matrix (date);",
     ]
 
     try:
         with engine.connect() as conn:
-            # Execute View Creation
+            # Execute clear instructions
+            for drop_statement in teardown_queries:
+                conn.execute(text(drop_statement))
+            conn.commit()
+            print("[+] Old materialized cache structures successfully dropped.")
+
+            # Compile Fresh Base Templates
             conn.execute(text(query_pcr_view))
             conn.execute(text(query_basis_view))
             conn.execute(text(query_inst_flow_view))
+            conn.commit()
 
-            # Execute Index Creation
+            # Compile Interconnected Analytical Matrix View
+            conn.execute(text(query_unified_matrix_view))
+            conn.commit()
+
+            # Re-bind index references
             for idx in indexes:
                 conn.execute(text(idx))
-
             conn.commit()
+
             print("[+] Materialized Views and Indexes successfully created.")
     except Exception as e:
         print(f"[-] Error creating views: {e}")
@@ -154,8 +213,7 @@ def build_materialized_views():
 
 def refresh_alpha_factory():
     """
-    Performs a standard refresh: Truncates old cached data and completely
-    refills the views using the latest tables.
+    Performs an atomic data refresh on existing schema allocations.
     """
     print("[*] Refreshing Materialized Views (Truncate & Refill)...")
     try:
@@ -163,6 +221,7 @@ def refresh_alpha_factory():
             conn.execute(text("REFRESH MATERIALIZED VIEW mv_options_aggregates;"))
             conn.execute(text("REFRESH MATERIALIZED VIEW mv_spot_futures_basis;"))
             conn.execute(text("REFRESH MATERIALIZED VIEW mv_institutional_flow;"))
+            conn.execute(text("REFRESH MATERIALIZED VIEW unified_market_matrix;"))
             conn.commit()
             print("[+] Alpha Factory Refresh Complete. Data is ready for Engine 1.")
     except Exception as e:

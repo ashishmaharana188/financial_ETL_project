@@ -8,9 +8,8 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 
-# Import new isolated UI modules
 from scripts.engines.companyMetrics import render_company_metrics
-from scripts.engines.olsEngine1 import render_ols_engine
+from scripts.engines.olsEngine1UI import render_ols_engine_ui
 
 # Import fetchers for the Market Overview (since it still calculates cross-sectional data)
 from scripts.ratioAnalysis import fetch_roic, fetch_fcf_yield
@@ -422,54 +421,23 @@ elif app_mode == "Engines":
             horizontal=True,
         )
 
-        # -----------------------------------------------------------------
-        # MODULAR DELEGATION: MODULE 1 (ALWAYS RENDERS FIRST)
-        # -----------------------------------------------------------------
         engine_data = render_company_metrics(
             selected_db_ticker, selected_source, view_mode, edgar_break_date, engine
         )
 
         st.divider()
 
-        # -----------------------------------------------------------------
-        # MODULAR DELEGATION: ENGINE RENDERING
-        # Uses the Dropdown selection from the Sidebar
-        # -----------------------------------------------------------------
         if engine_view == "OLS Engine 1":
-            render_ols_engine(
-                company_sector,
-                company_industry,
-                engine_data["df_op_margin"],
-                engine_data["df_gr_margin"],
-                engine_data["df_int_cov"],
-                engine_data["df_turnover"],
-                engine_data["df_fcf_margin"],
-                engine_data["df_rev_growth"],
-                engine,
-            )
+            # Executes the direct scannable monitoring terminal view
+            render_ols_engine_ui(selected_db_ticker)
 
         elif engine_view == "Canvas Mode (All Engines)":
-            st.markdown("## 🎨 Canvas Mode: Master Engine View")
+            st.markdown("## Canvas Mode: Master Engine View")
             st.caption("Rendering all active quantitative engines simultaneously.")
-
             st.markdown("---")
-            render_ols_engine(
-                company_sector,
-                company_industry,
-                engine_data["df_op_margin"],
-                engine_data["df_gr_margin"],
-                engine_data["df_int_cov"],
-                engine_data["df_turnover"],
-                engine_data["df_fcf_margin"],
-                engine_data["df_rev_growth"],
-                engine,
-            )
 
-            # FUTURE ENGINES:
-            # st.markdown("---")
-            # render_dcf_engine(engine_data...)
-            # st.markdown("---")
-            # render_options_pricing_engine(engine_data...)
+            # Render the OLS ledger scanner alongside your upcoming modules
+            render_ols_engine_ui()
 
 elif app_mode == "Market Overview":
     st.title("Market Overview")

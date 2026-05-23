@@ -55,12 +55,11 @@ def register_discovered_tickers(tickers, data_source="auto"):
 
 
 def get_active_global_assets():
-    """Fetches dynamically discovered FOREIGN equities/assets. Ignores NSE/BSE to prevent overlap with unified_market_master."""
+
     query = """
-        SELECT "Ticker", "AssetClass"
+        SELECT "Ticker", "AssetClass","Exchange"
         FROM market_metadata 
-        WHERE "IsActive" = true 
-        AND "Exchange" NOT IN ('NSE', 'BSE');
+        WHERE "IsActive" = true; 
     """
     try:
         with engine.connect() as conn:
@@ -159,11 +158,20 @@ def fetch_hybrid_macro_data(
     # --- 3. FETCH GLOBAL ASSETS (YF) ---
     global_assets_df = get_active_global_assets()
     for _, row in global_assets_df.iterrows():
-        ticker = row["Ticker"]
+        raw_ticker = row["Ticker"]
         asset_class = row["AssetClass"]
+        exchange = row["Exchange"]
+
+        # Standardize Ticker for YF
+        ticker = raw_ticker
+        if exchange == "NSI" and not ticker.endswith(".NS"):
+            ticker = f"{raw_ticker}.NS"
+        elif exchange == "BSE" and not ticker.endswith(".BO"):
+            ticker = f"{raw_ticker}.BO"
+
         for interval in intervals:
             try:
-                print(f" -> YF Asset Fetch: {ticker} | {interval}...")
+                print(f" -> YF Asset Fetch: {ticker} ({exchange}) | {interval}...")
                 tick = yf.Ticker(ticker)
                 hist = tick.history(period=get_yf_period(interval), interval=interval)
 
@@ -173,7 +181,7 @@ def fetch_hybrid_macro_data(
                     df.index.name = "ReportDate"
                     df.reset_index(inplace=True)
 
-                    df["EntityName"] = ticker
+                    df["EntityName"] = raw_ticker
                     df["Timeframe"] = interval
                     df["Category"] = "ASSET"
                     df["AssetClass"] = asset_class

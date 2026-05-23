@@ -35,7 +35,7 @@ def run_isolated_script(script_name, extra_args=None):
     Runs a python script synchronously. If it fails, it returns False.
     All stdout/stderr is tee'd to a log file for post-crash debugging.
     """
-    header = f"\n{'='*50}\n🚀 EXECUTING: {script_name}\n{'='*50}\n"
+    header = f"\n{'='*50}\nEXECUTING: {script_name}\n{'='*50}\n"
     write_log(header)
 
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -46,8 +46,12 @@ def run_isolated_script(script_name, extra_args=None):
         write_log(f"[!] Critical Error: Missing {script_path}\n")
         return False
 
-    module_name = f"scripts.{script_name.replace('.py', '')}"
+    # Standardize forward and backward slashes into Python dot-notation module syntax
+    normalized_script = script_name.replace("/", ".").replace("\\", ".")
+    module_name = f"scripts.{normalized_script.replace('.py', '')}"
+
     cmd = [sys.executable, "-u", "-m", module_name]
+
     if extra_args:
         cmd.extend(extra_args)
 
@@ -135,6 +139,8 @@ def get_events_highest_watermark():
     return default_date
 
 
+# ... Keep all imports, logger initializations, and helper functions identical ...
+
 if __name__ == "__main__":
     import argparse
 
@@ -198,11 +204,28 @@ if __name__ == "__main__":
 
         write_log("\n  ALL DOMAINS SYNCED SUCCESSFULLY.\n")
 
+        # =====================================================================
+        # AUTOMATION LINK: SEQUENTIAL INFERENCE AND AUDIT PHASE
+        # =====================================================================
+        write_log("\n--- DOMAIN 4: QUANTITATIVE MATHEMATICAL CORES ---\n")
+        write_log("[*] Executing OLS Engine 1 (Incremental Prediction Catch-up)...")
+        if not run_isolated_script("engines/olsEngine1.py"):
+            sys.exit(1)
+
+        write_log(
+            "[*] Executing Systemic Auditor Engine (Realized Performance Catch-up)..."
+        )
+        if not run_isolated_script("engines/auditorEngine.py"):
+            sys.exit(1)
+
+        write_log(
+            "\n  QUANTITATIVE MODEL CACHE AND PERFORMANCE LEDGERS FULLY DEPLOYED.\n"
+        )
+
     elif args.mode == "bulk_historic":
         write_log(f"[*] Triggering ISOLATED Master Ingestion (Bypassing Scrapers)\n")
 
         write_log("\n--- PHASE 2: SEQUENTIAL INGESTION (DUMB LOADERS) ---\n")
-        # The crucial fix: Notice the sys.exit(1) halts the pipeline if the parser crashes
         ui_args = ["--start", args.start]
         if not run_isolated_script("ingestUnifiedMatrix.py", ui_args):
             sys.exit(1)
@@ -242,7 +265,19 @@ if __name__ == "__main__":
         write_log(f"\n[*] Triggering ISOLATED Alpha Factory Refresh\n")
 
         write_log("\n--- REBUILDING MATERIALIZED VIEWS ---\n")
-        if not run_isolated_script("materializedViewEngine.py", ["--refresh"]):
+        if not run_isolated_script("materializedViewEngine.py", ["--build"]):
+            sys.exit(1)
+
+        # =====================================================================
+        # AUTOMATION LINK: MASSIVE BACKFILL RECOMPUTATION AFTER RE-BUILD
+        # =====================================================================
+        write_log("\n--- RECOMPUTING DEEP ANOMALY LEDGERS ---\n")
+        write_log("[*] Rebuilding complete multi-horizon prediction database cache...")
+        if not run_isolated_script("engines/olsEngine1.py"):
+            sys.exit(1)
+
+        write_log("[*] Rebuilding complete historical hit-rate validation matrix...")
+        if not run_isolated_script("engines/auditorEngine.py"):
             sys.exit(1)
 
         write_log("\nALPHA FACTORY REFRESH COMPLETE.\n")
