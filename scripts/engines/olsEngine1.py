@@ -29,6 +29,17 @@ class OLSMicrostructureEngine:
                 query, conn, params={"ticker": ticker, "asof_date": asof_date}
             )
 
+        numeric_cols = [
+            "close",
+            "volume",
+            "delivery_percentage",
+            "oi_pcr",
+            "futures_basis",
+        ]
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
         if not df.empty:
             df["date"] = pd.to_datetime(df["date"])
             df.set_index("date", inplace=True)
@@ -327,7 +338,6 @@ def run_mass_historical_backfill(days_depth=60):
             try:
                 pipeline.execute_pipeline(ticker=ticker, asof_date=target_date)
             except Exception as e:
-                # Isolate failures so one corrupted date/ticker row doesn't abort the mass execution
                 print(f"[SKIP] Pipeline error for {ticker} on {target_date}: {e}")
 
 

@@ -43,7 +43,7 @@ def build_materialized_views():
         END AS "Volume_PCR"
         
     FROM unified_market_master
-    WHERE "InstrumentType" LIKE 'OPT%'
+    WHERE "InstrumentType" IN ('OPTSTK', 'OPTIDX', 'STO', 'IDO')
     GROUP BY "Ticker", "ReportDate", "ExpiryDate";
     """
 
@@ -57,7 +57,7 @@ def build_materialized_views():
     FuturesData AS (
         SELECT "Ticker", "ReportDate", "ExpiryDate", "Close" AS "Futures_Price", "Open_Interest"
         FROM unified_market_master
-        WHERE "InstrumentType" LIKE 'FUT%'
+        WHERE "InstrumentType" IN ('FUTSTK', 'FUTIDX', 'STF', 'IDF', 'FUTIVX')
     )
     SELECT 
         f."Ticker",
@@ -164,9 +164,9 @@ def build_materialized_views():
             c.close,
             c.volume,
             c.delivery_percentage,
-            COALESCE(p.oi_pcr, 0.0) AS oi_pcr,
-            COALESCE(p.delta_oi_pcr, 0.0) AS delta_oi_pcr,
-            COALESCE(b.futures_basis, 0.0) AS futures_basis
+            p.oi_pcr AS oi_pcr,               
+            p.delta_oi_pcr AS delta_oi_pcr,   
+            b.futures_basis AS futures_basis  
         FROM CashBase c
         LEFT JOIN DailyPCRWithDelta p ON c.ticker = p.ticker AND c.date = p.date
         LEFT JOIN NearMonthBasis b ON c.ticker = b.ticker AND c.date = b.date;
