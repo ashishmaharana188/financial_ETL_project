@@ -4,9 +4,7 @@ from sqlalchemy import text, MetaData, Table, Column, String, Date, Float, Boole
 from sqlalchemy.dialects.postgresql import insert
 from scripts.database import engine
 
-# -----------------------------------------------------------------
-# 1. DATABASE SCHEMA CONTRACT
-# -----------------------------------------------------------------
+
 metadata = MetaData()
 validation_ledger = Table(
     "validation_ledger",
