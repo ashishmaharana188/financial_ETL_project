@@ -12,8 +12,30 @@ from sqlalchemy.dialects.postgresql import insert
 import re
 import io
 import uuid
+import logging
 
 CACHE_DIR = "offline_data_cache/master_archives"
+
+# High-Speed Compact Logger
+logging.basicConfig(
+    filename="ingestion_audit.log",
+    level=logging.INFO,
+    format="%(asctime)s | FILE: %(file_name)-40s | RAW: %(raw)-8s | DEDUP: %(dedup)-8s | PUSH: %(push)-8s | STATUS: %(status)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
+
+def log_audit(file_name, raw, dedup, push, status):
+    logging.info(
+        "",
+        extra={
+            "file_name": os.path.basename(str(file_name)),
+            "raw": raw,
+            "dedup": dedup,
+            "push": push,
+            "status": status,
+        },
+    )
 
 
 def clean_for_db(df):
@@ -195,8 +217,12 @@ def parse_mcx(file_path):
 
     # Handle if JSON is wrapped in a dict
     if isinstance(data, dict):
-        if "data" in data:
+        if "d" in data and isinstance(data["d"], dict) and "Data" in data["d"]:
+            data = data["d"]["Data"]
+        elif "data" in data:
             data = data["data"]
+        elif "Data" in data:
+            data = data["Data"]
         else:
             data = [data]
 
@@ -216,7 +242,9 @@ def parse_mcx(file_path):
             return pd.DataFrame()
 
     df["ReportDate"] = pd.to_datetime(df["Date"])
-    df["ExpiryDate"] = pd.to_datetime(df["ExpiryDate"]).dt.date
+    df["ExpiryDate"] = pd.to_datetime(
+        df["ExpiryDate"], format="mixed", errors="coerce"
+    ).dt.date
 
     df = df.rename(
         columns={
@@ -240,10 +268,13 @@ def parse_mcx(file_path):
     return df
 
 
-def push_chunk_to_db(df):
+def push_chunk_to_db(df, file_name="Unknown_File"):
     """Bypasses SQLAlchemy text-parsing and uses psycopg2 COPY for 100x throughput."""
     if df.empty:
+        log_audit(file_name, 0, 0, 0, "SKIPPED_EMPTY")
         return
+
+    raw_count = len(df)  # Track incoming rows
 
     final_columns = [
         "Ticker",
@@ -277,8 +308,20 @@ def push_chunk_to_db(df):
     df = clean_for_db(df)
 
     # Clean duplicates in Python first
-    pk_cols = ["Ticker", "ReportDate", "InstrumentType", "ExpiryDate", "StrikePrice"]
+    pk_cols = [
+        "Ticker",
+        "ReportDate",
+        "InstrumentType",
+        "ExpiryDate",
+        "StrikePrice",
+        "OptionType",
+        "Exchange_Series",
+    ]
+    df["OptionType"] = df["OptionType"].fillna("XX")
+    df["Exchange_Series"] = df["Exchange_Series"].fillna("XX")
+    df["StrikePrice"] = df["StrikePrice"].fillna(0.0)
     df = df.drop_duplicates(subset=pk_cols, keep="last")
+    dedup_count = len(df)
 
     print(f"    -> [BULK PUSH] Streaming {len(df)} rows to DB via COPY protocol...")
 
@@ -319,14 +362,21 @@ def push_chunk_to_db(df):
             upsert_query = f"""
                 INSERT INTO unified_market_master ({columns})
                 SELECT {columns} FROM {temp_table}
-                ON CONFLICT ("Ticker", "ReportDate", "InstrumentType", "ExpiryDate", "StrikePrice")
+                ON CONFLICT ("Ticker", "ReportDate", "InstrumentType", "ExpiryDate", "StrikePrice", "OptionType", "Exchange_Series")
                 DO UPDATE SET {set_clause};
             """
             cur.execute(upsert_query)
 
         raw_conn.commit()
+        log_audit(
+            file_name, raw_count, dedup_count, dedup_count, "SUCCESS"
+        )  # UPDATE 4: Log Success
     except Exception as e:
         raw_conn.rollback()
+        error_msg = str(e).replace("\n", " ")[:80]
+        log_audit(
+            file_name, raw_count, dedup_count, 0, f"FAILED: {error_msg}"
+        )  # UPDATE 5: Log Failure
         print(f"    [-] CRITICAL Bulk Push Error: {e}")
     finally:
         raw_conn.close()
@@ -399,7 +449,7 @@ def execute_pipeline(start_date_str="1900-01-01"):
         )
         # Pass the pre-loaded RAM object here instead of a filepath
         df = parse_cash_and_shorts(cash_file, global_short_df)
-        push_chunk_to_db(df)
+        push_chunk_to_db(df, cash_file)
 
     # 2. PARSE F&O
     for idx, z_path in enumerate(fo_zips, 1):
@@ -419,12 +469,12 @@ def execute_pipeline(start_date_str="1900-01-01"):
                     ):
                         with z.open(file_name) as f:
                             df = pd.read_csv(f)
-                            push_chunk_to_db(parse_modern_fo_df(df))
+                            push_chunk_to_db(parse_modern_fo_df(df), file_name)
 
                     elif file_name.startswith("fo") and file_name.endswith("bhav.csv"):
                         with z.open(file_name) as f:
                             df = pd.read_csv(f)
-                            push_chunk_to_db(parse_legacy_fo_df(df))
+                            push_chunk_to_db(parse_legacy_fo_df(df), file_name)
         except zipfile.BadZipFile:
             print(f"    [-] Corrupted Zip File skipped: {z_path}")
 
@@ -436,7 +486,7 @@ def execute_pipeline(start_date_str="1900-01-01"):
             continue
 
         print(f"[*] Parsing MCX [ {idx} / {total_mcx} ] : {os.path.basename(mcx_file)}")
-        push_chunk_to_db(parse_mcx(mcx_file))
+        push_chunk_to_db(parse_mcx(mcx_file), mcx_file)
 
     print("[SUCCESS] Unified Matrix Update Complete.")
 
