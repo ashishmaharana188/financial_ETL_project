@@ -128,7 +128,21 @@ def build_materialized_views():
                 "ReportDate"::DATE AS date,
                 "Close" AS close,
                 "Volume" AS volume,
-                "Delivery_Percentage" AS delivery_percentage
+                "Delivery_Percentage" AS delivery_percentage,
+                
+                -- PROXY: Daily Volatility (High-Low Spread)
+                CASE 
+                    WHEN "Close" = 0 OR "Close" IS NULL THEN 0 
+                    ELSE (("High"::FLOAT - "Low"::FLOAT) / "Close"::FLOAT) * 100 
+                END AS daily_hl_spread,
+                
+                -- PROXY: Daily Order Book Pressure (VWAP Deviation)
+                -- FIX: Multiply Turnover by 100,000 to correct NSE Lakh scaling
+                CASE 
+                    WHEN "Volume" = 0 OR "Volume" IS NULL OR "Close" = 0 THEN 0 
+                    ELSE (( (("Turnover"::FLOAT * 100000) / "Volume"::FLOAT) - "Close"::FLOAT ) / "Close"::FLOAT) * 100 
+                END AS daily_vwap_dev
+                
             FROM unified_market_master
             WHERE "InstrumentType" = 'CASH'
             AND "Exchange_Series" = 'EQ'
@@ -149,7 +163,6 @@ def build_materialized_views():
                 ticker,
                 date,
                 oi_pcr,
-                -- CALCULATE THE DELTA (ΔOI PCR) BEFORE THE FINAL JUNCTION JOIN
                 oi_pcr - LAG(oi_pcr) OVER (PARTITION BY ticker ORDER BY date) AS delta_oi_pcr
             FROM DailyPCR
         ),
@@ -160,6 +173,15 @@ def build_materialized_views():
                 "Absolute_Basis" AS futures_basis
             FROM mv_spot_futures_basis
             ORDER BY "Ticker", "ReportDate", "Open_Interest" DESC
+        ),
+        BlockBulkEvents AS (
+            SELECT 
+                "Ticker" AS ticker,
+                "ReportDate"::DATE AS date,
+                SUM(CASE WHEN "TransactionType" = 'BUY' THEN "Quantity" ELSE -"Quantity" END) AS net_block_volume,
+                AVG("TradePrice") AS avg_block_price
+            FROM trade_events_ledger
+            GROUP BY "Ticker", "ReportDate"
         )
         SELECT 
             c.ticker,
@@ -167,12 +189,25 @@ def build_materialized_views():
             c.close,
             c.volume,
             c.delivery_percentage,
-            p.oi_pcr AS oi_pcr,               
-            p.delta_oi_pcr AS delta_oi_pcr,   
-            b.futures_basis AS futures_basis  
+            c.daily_hl_spread,
+            c.daily_vwap_dev,
+            
+            p.oi_pcr,               
+            p.delta_oi_pcr,   
+            b.futures_basis,
+            
+            COALESCE(e.net_block_volume, 0) AS net_block_volume,
+            
+            -- PROXY: Block Premium/Discount relative to EOD Spot Close
+            CASE 
+                WHEN e.avg_block_price IS NULL OR c.close = 0 THEN 0
+                ELSE ((e.avg_block_price - c.close) / c.close) * 100
+            END AS avg_block_premium
+            
         FROM CashBase c
         LEFT JOIN DailyPCRWithDelta p ON c.ticker = p.ticker AND c.date = p.date
-        LEFT JOIN NearMonthBasis b ON c.ticker = b.ticker AND c.date = b.date;
+        LEFT JOIN NearMonthBasis b ON c.ticker = b.ticker AND c.date = b.date
+        LEFT JOIN BlockBulkEvents e ON c.ticker = e.ticker AND c.date = e.date;
         """
 
     indexes = [
