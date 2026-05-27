@@ -82,17 +82,32 @@ def run_isolated_script(script_name, extra_args=None):
 
 
 def get_domain_watermark(table_name, friendly_name):
-
     try:
         with engine.connect() as conn:
-            # We specifically target the table passed in the argument
-            res = conn.execute(
-                text(f'SELECT MAX("ReportDate") FROM {table_name}')
-            ).scalar()
+            if table_name == "unified_market_master":
+                # THE WEAKEST LINK STRATEGY:
+                # Group by instrument type to find the MAX date for EACH instrument.
+                # Then, return the MINIMUM of those MAX dates so the slowest instrument dictates the backfill.
+                query = """
+                SELECT MIN(max_date) FROM (
+                    SELECT "InstrumentType", MAX("ReportDate") as max_date 
+                    FROM unified_market_master 
+                    WHERE "InstrumentType" IN ('CASH', 'STF', 'STO', 'IDF', 'IDO', 'FUTCOM', 'OPTFUT')
+                    GROUP BY "InstrumentType"
+                ) subquery;
+                """
+                res = conn.execute(text(query)).scalar()
+            else:
+                # Standard check for other tables (Institutional Ledger, etc.)
+                res = conn.execute(
+                    text(f'SELECT MAX("ReportDate") FROM {table_name}')
+                ).scalar()
+
             if res:
                 date_val = pd.to_datetime(res).date()
-                write_log(f"[*] {friendly_name} Watermark: {date_val}")
+                write_log(f"[*] {friendly_name} Weakest-Link Watermark: {date_val}")
                 return date_val
+
     except Exception as e:
         write_log(f"[-] DB Query Failed for {table_name}: {e}")
 
@@ -138,8 +153,6 @@ def get_events_highest_watermark():
     write_log(f"[*] Trade Events Watermark: Not Found (Defaulting to {default_date})")
     return default_date
 
-
-# ... Keep all imports, logger initializations, and helper functions identical ...
 
 if __name__ == "__main__":
     import argparse
@@ -204,23 +217,21 @@ if __name__ == "__main__":
 
         write_log("\n  ALL DOMAINS SYNCED SUCCESSFULLY.\n")
 
-        # =====================================================================
-        # AUTOMATION LINK: SEQUENTIAL INFERENCE AND AUDIT PHASE
-        # =====================================================================
-        write_log("\n--- DOMAIN 4: QUANTITATIVE MATHEMATICAL CORES ---\n")
-        write_log("[*] Executing OLS Engine 1 (Incremental Prediction Catch-up)...")
-        if not run_isolated_script("engines/olsEngine1.py"):
-            sys.exit(1)
+        ## AUTOMATION LINK: SEQUENTIAL INFERENCE AND AUDIT PHASE
+        # write_log("\n--- DOMAIN 4: QUANTITATIVE MATHEMATICAL CORES ---\n")
+        # write_log("[*] Executing OLS Engine 1 (Incremental Prediction Catch-up)...")
+        # if not run_isolated_script("engines/olsEngine1.py"):
+        #    sys.exit(1)
 
-        write_log(
-            "[*] Executing Systemic Auditor Engine (Realized Performance Catch-up)..."
-        )
-        if not run_isolated_script("engines/auditorEngine.py"):
-            sys.exit(1)
+        # write_log(
+        #    "[*] Executing Systemic Auditor Engine (Realized Performance Catch-up)..."
+        # )
+        # if not run_isolated_script("engines/auditorEngine.py"):
+        #    sys.exit(1)
 
-        write_log(
-            "\n  QUANTITATIVE MODEL CACHE AND PERFORMANCE LEDGERS FULLY DEPLOYED.\n"
-        )
+        # write_log(
+        #    "\n  QUANTITATIVE MODEL CACHE AND PERFORMANCE LEDGERS FULLY DEPLOYED.\n"
+        # )
 
     elif args.mode == "bulk_historic":
         write_log(f"[*] Triggering ISOLATED Master Ingestion (Bypassing Scrapers)\n")
@@ -268,16 +279,13 @@ if __name__ == "__main__":
         if not run_isolated_script("materializedViewEngine.py", ["--build"]):
             sys.exit(1)
 
-        # =====================================================================
-        # AUTOMATION LINK: MASSIVE BACKFILL RECOMPUTATION AFTER RE-BUILD
-        # =====================================================================
-        write_log("\n--- RECOMPUTING DEEP ANOMALY LEDGERS ---\n")
-        write_log("[*] Rebuilding complete multi-horizon prediction database cache...")
-        if not run_isolated_script("engines/olsEngine1.py"):
-            sys.exit(1)
+        # write_log("\n--- RECOMPUTING DEEP ANOMALY LEDGERS ---\n")
+        # write_log("[*] Rebuilding complete multi-horizon prediction database cache...")
+        # if not run_isolated_script("engines/olsEngine1.py"):
+        #    sys.exit(1)
 
-        write_log("[*] Rebuilding complete historical hit-rate validation matrix...")
-        if not run_isolated_script("engines/auditorEngine.py"):
-            sys.exit(1)
+        # write_log("[*] Rebuilding complete historical hit-rate validation matrix...")
+        # if not run_isolated_script("engines/auditorEngine.py"):
+        #    sys.exit(1)
 
         write_log("\nALPHA FACTORY REFRESH COMPLETE.\n")

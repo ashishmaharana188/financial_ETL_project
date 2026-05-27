@@ -7,8 +7,30 @@ from sqlalchemy import text
 from scripts.database import engine  # Ensure this points to your SQLAlchemy engine
 import re
 from sqlalchemy.dialects.postgresql import insert
+import logging
 
 CACHE_DIR = "offline_data_cache/master_archives"
+
+logging.basicConfig(
+    filename="ingestion_audit.log",
+    level=logging.INFO,
+    format="%(asctime)s | FILE: %(file_name)-40s | RAW: %(raw)-8s | DEDUP: %(dedup)-8s | PUSH: %(push)-8s | STATUS: %(status)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    force=True,
+)
+
+
+def log_audit(file_name, raw, dedup, push, status):
+    logging.info(
+        "",
+        extra={
+            "file_name": os.path.basename(str(file_name)),
+            "raw": raw,
+            "dedup": dedup,
+            "push": push,
+            "status": status,
+        },
+    )
 
 
 def clean_for_db(df):
@@ -102,6 +124,8 @@ def execute_macro_pipeline(start_date_str="1900-01-01"):
         print(f"[*] Parsing Macro Cash Flow (Resuming from {resume_date})...")
         df_cash = parse_fiidii_cash(cash_file)
         # INCREMENTAL SKIP LOGIC for Single Dataframe
+        log_audit(cash_file, len(df_cash), len(df_cash), 0, "PARSED_IN_MEMORY")
+
         df_cash = df_cash[df_cash["ReportDate"].dt.date >= resume_date]
     else:
         df_cash = pd.DataFrame()
@@ -137,6 +161,9 @@ def execute_macro_pipeline(start_date_str="1900-01-01"):
         parsed_df = parse_participant_oi(file)
         if not parsed_df.empty:
             oi_dataframes.append(parsed_df)
+            log_audit(file, len(parsed_df), len(parsed_df), 0, "PARSED_IN_MEMORY")
+        else:
+            log_audit(file, 0, 0, 0, "SKIPPED_EMPTY")
 
     if oi_dataframes:
         df_oi = pd.concat(oi_dataframes, ignore_index=True)
@@ -188,7 +215,9 @@ def execute_macro_pipeline(start_date_str="1900-01-01"):
     master_macro_df = clean_for_db(master_macro_df)
 
     pk_cols = ["ReportDate", "ClientType"]
+    raw_count = len(master_macro_df)
     master_macro_df = master_macro_df.drop_duplicates(subset=pk_cols, keep="last")
+    dedup_count = len(master_macro_df)
 
     print(
         f"\n[DB PUSH] Upserting {len(master_macro_df)} rows into 'institutional_ledger'..."
@@ -203,15 +232,23 @@ def execute_macro_pipeline(start_date_str="1900-01-01"):
         )
         conn.execute(upsert_stmt)
 
-    master_macro_df.to_sql(
-        "institutional_ledger",
-        con=engine,
-        if_exists="append",
-        index=False,
-        chunksize=5000,
-        method=postgres_upsert,
-    )
-    print("[SUCCESS] Institutional Ledger Update Complete.")
+    try:
+        master_macro_df.to_sql(
+            "institutional_ledger",
+            con=engine,
+            if_exists="append",
+            index=False,
+            chunksize=5000,
+            method=postgres_upsert,
+        )
+        log_audit("Batch_Macro_Concat", raw_count, dedup_count, dedup_count, "SUCCESS")
+        print("[SUCCESS] Institutional Ledger Update Complete.")
+    except Exception as e:
+        error_msg = str(e).replace("\n", " ")[:80]
+        log_audit(
+            "Batch_Macro_Concat", raw_count, dedup_count, 0, f"FAILED: {error_msg}"
+        )
+        print(f"    [-] CRITICAL Bulk Push Error: {e}")
 
 
 if __name__ == "__main__":

@@ -317,9 +317,35 @@ def push_chunk_to_db(df, file_name="Unknown_File"):
         "OptionType",
         "Exchange_Series",
     ]
+
+    df = df.dropna(subset=["ReportDate"])
+
+    # 2. Strip hidden spaces to prevent logical string mismatches
+    str_pk_cols = ["Ticker", "InstrumentType", "OptionType", "Exchange_Series"]
+    for col in str_pk_cols:
+        if col in df.columns:
+            # Re-convert to NaN if it was a genuine null string like "nan" or "None"
+            df[col] = (
+                df[col].astype(str).str.strip().replace({"nan": np.nan, "None": np.nan})
+            )
+
+    df["Ticker"] = df["Ticker"].fillna("UNKNOWN")
+    df["InstrumentType"] = df["InstrumentType"].fillna("XX")
     df["OptionType"] = df["OptionType"].fillna("XX")
     df["Exchange_Series"] = df["Exchange_Series"].fillna("XX")
     df["StrikePrice"] = df["StrikePrice"].fillna(0.0)
+    df["ExpiryDate"] = df["ExpiryDate"].fillna(pd.to_datetime("2099-12-31").date())
+
+    pk_cols = [
+        "Ticker",
+        "ReportDate",
+        "InstrumentType",
+        "ExpiryDate",
+        "StrikePrice",
+        "OptionType",
+        "Exchange_Series",
+    ]
+
     df = df.drop_duplicates(subset=pk_cols, keep="last")
     dedup_count = len(df)
 

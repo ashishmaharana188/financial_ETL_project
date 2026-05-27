@@ -8,9 +8,33 @@ from scripts.database import engine
 import re
 import io
 import uuid
+import logging
 from sqlalchemy.dialects.postgresql import insert
 
 CACHE_DIR = "offline_data_cache/master_archives"
+
+
+# Route to the shared ingestion audit log
+logging.basicConfig(
+    filename="ingestion_audit.log",
+    level=logging.INFO,
+    format="%(asctime)s | FILE: %(file_name)-40s | RAW: %(raw)-8s | DEDUP: %(dedup)-8s | PUSH: %(push)-8s | STATUS: %(status)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    force=True,
+)
+
+
+def log_audit(file_name, raw, dedup, push, status):
+    logging.info(
+        "",
+        extra={
+            "file_name": os.path.basename(str(file_name)),
+            "raw": raw,
+            "dedup": dedup,
+            "push": push,
+            "status": status,
+        },
+    )
 
 
 def clean_for_db(df):
@@ -61,9 +85,12 @@ def parse_trade_events(file_path, event_type):
     return df
 
 
-def push_chunk_to_db(df):
+def push_chunk_to_db(df, file_name="Unknown_Events_File"):
     if df.empty:
+        log_audit(file_name, 0, 0, 0, "SKIPPED_EMPTY")
         return
+
+    raw_count = len(df)  # Track incoming rows
 
     # 1. Exact Match to your SQLAlchemy Model (Case-Sensitive)
     final_columns = [
@@ -95,6 +122,7 @@ def push_chunk_to_db(df):
         "TradePrice",
     ]
     df = df.drop_duplicates(subset=pk_cols, keep="last")
+    dedup_count = len(df)
 
     print(f"    -> [BULK PUSH] Upserting {len(df)} rows into 'trade_events_ledger'...")
 
@@ -120,7 +148,10 @@ def push_chunk_to_db(df):
             chunksize=5000,
             method=postgres_upsert,
         )
+        log_audit(file_name, raw_count, dedup_count, dedup_count, "SUCCESS")
     except Exception as e:
+        error_msg = str(e).replace("\n", " ")[:80]
+        log_audit(file_name, raw_count, dedup_count, 0, f"FAILED: {error_msg}")
         print(f"    [-] CRITICAL Bulk Push Error: {e}")
 
 
@@ -158,6 +189,9 @@ def execute_events_pipeline(start_date_str="1900-01-01"):
         parsed_df = parse_trade_events(file, "Bulk Deal")
         if not parsed_df.empty:
             all_dataframes.append(parsed_df)
+            log_audit(file, len(parsed_df), len(parsed_df), 0, "PARSED_IN_MEMORY")
+        else:
+            log_audit(file, 0, 0, 0, "SKIPPED_EMPTY")
 
     # Process Block Deals
     for idx, file in enumerate(block_files, 1):
@@ -170,6 +204,9 @@ def execute_events_pipeline(start_date_str="1900-01-01"):
         parsed_df = parse_trade_events(file, "Block Deal")
         if not parsed_df.empty:
             all_dataframes.append(parsed_df)
+            log_audit(file, len(parsed_df), len(parsed_df), 0, "PARSED_IN_MEMORY")
+        else:
+            log_audit(file, 0, 0, 0, "SKIPPED_EMPTY")
 
     if not all_dataframes:
         print("  No new trade events to process. DB is up to date.")

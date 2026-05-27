@@ -53,11 +53,13 @@ def build_materialized_views():
         SELECT "Ticker", "ReportDate", "Close" AS "Spot_Price"
         FROM unified_market_master
         WHERE "InstrumentType" = 'CASH'
+        AND "Exchange_Series" = 'EQ'
     ),
     FuturesData AS (
         SELECT "Ticker", "ReportDate", "ExpiryDate", "Close" AS "Futures_Price", "Open_Interest"
         FROM unified_market_master
         WHERE "InstrumentType" IN ('FUTSTK', 'FUTIDX', 'STF', 'IDF', 'FUTIVX')
+        AND "OptionType" = 'XX'
     )
     SELECT 
         f."Ticker",
@@ -129,6 +131,7 @@ def build_materialized_views():
                 "Delivery_Percentage" AS delivery_percentage
             FROM unified_market_master
             WHERE "InstrumentType" = 'CASH'
+            AND "Exchange_Series" = 'EQ'
         ),
         DailyPCR AS (
             SELECT 

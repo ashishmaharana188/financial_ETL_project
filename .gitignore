@@ -1,6 +1,6 @@
 
 .env
-
+ingestion_audit.log
 venv/
 env/
 pipeline_execution.log

@@ -3,7 +3,7 @@ import pandas as pd
 from sqlalchemy import text
 from scripts.database import engine
 from scripts.statementScrape import run_etl_pipeline
-from scripts.macroScrape import run_macro_pipeline, register_discovered_tickers
+from scripts.macroScrape import register_discovered_tickers
 import subprocess
 import sys
 from datetime import datetime, timedelta
