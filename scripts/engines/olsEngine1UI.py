@@ -13,9 +13,9 @@ def fetch_single_ticker_ledger(ticker: str, target_date: str) -> pd.DataFrame:
         WHERE ticker = :ticker AND asof_date = :target_date AND engine_name = '1_OLS_Microstructure'
     """)
     with engine.connect() as conn:
-        return pd.read_sql(
+        return engine.execute(
             query, conn, params={"ticker": ticker, "target_date": target_date}
-        )
+        ).df()
 
 
 def fetch_watchlist_ledger(target_date: str) -> pd.DataFrame:
@@ -25,7 +25,7 @@ def fetch_watchlist_ledger(target_date: str) -> pd.DataFrame:
         WHERE asof_date = :target_date AND engine_name = '1_OLS_Microstructure'
     """)
     with engine.connect() as conn:
-        return pd.read_sql(query, conn, params={"target_date": target_date})
+        return engine.execute(query, conn, params={"target_date": target_date}).df()
 
 
 def fetch_historical_accuracy(ticker: str) -> dict:
@@ -36,7 +36,7 @@ def fetch_historical_accuracy(ticker: str) -> dict:
         WHERE ticker = :ticker AND engine_name = '1_OLS_Microstructure'
     """)
     with engine.connect() as conn:
-        df = pd.read_sql(query, conn, params={"ticker": ticker})
+        df = engine.execute(query, conn, params={"ticker": ticker}).df()
 
     if df.empty:
         return {"hit_rate": "N/A", "avg_error": "N/A", "total_audits": 0}
@@ -64,7 +64,7 @@ def fetch_trend_matrix(
         LIMIT :limit
     """)
     with engine.connect() as conn:
-        df = pd.read_sql(
+        df = engine.execute(
             query,
             conn,
             params={
@@ -72,7 +72,7 @@ def fetch_trend_matrix(
                 "target_date": target_date,
                 "limit": days_lookback,
             },
-        )
+        ).df()
     if not df.empty:
         df = df.sort_values(by="date")
         df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
@@ -99,7 +99,7 @@ def render_prediction_trajectory_chart(
         LIMIT :limit
     """)
     with engine.connect() as conn:
-        actual_df = pd.read_sql(
+        actual_df = engine.execute(
             query,
             conn,
             params={
@@ -107,7 +107,7 @@ def render_prediction_trajectory_chart(
                 "start_date": prediction_date,
                 "limit": target_days + 3,
             },
-        )
+        ).df()
 
     if actual_df.empty or len(actual_df) < 2:
         st.caption(f"Waiting for market data to validate {prediction_date} signal...")

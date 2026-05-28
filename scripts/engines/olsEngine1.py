@@ -25,7 +25,7 @@ class OLSMicrostructureEngine:
             LIMIT 500
         """)
         with engine.connect() as conn:
-            df = pd.read_sql(
+            df = engine.execute(
                 query, conn, params={"ticker": ticker, "asof_date": asof_date}
             )
 
@@ -55,9 +55,9 @@ class OLSMicrostructureEngine:
             ORDER BY "ReportDate" ASC
         """)
         with engine.connect() as conn:
-            df = pd.read_sql(
+            df = engine.execute(
                 query, conn, params={"ticker": ticker, "asof_date": asof_date}
-            )
+            ).df()
 
         # Holiday/Non-trading day mitigation check
         if df.empty or len(df) < 5:
@@ -95,10 +95,12 @@ class OLSMicrostructureEngine:
         """)
 
         with engine.connect() as conn:
-            vix_df = pd.read_sql(vix_query, conn, params={"asof_date": asof_date})
-            breadth_df = pd.read_sql(
+            vix_df = engine.execute(
+                vix_query, conn, params={"asof_date": asof_date}
+            ).df()
+            breadth_df = engine.execute(
                 breadth_query, conn, params={"asof_date": asof_date}
-            )
+            ).df()
 
         # Default fallback conditions if staging tables lack depth
         regime = "Neutral"

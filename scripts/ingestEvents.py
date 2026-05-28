@@ -3,13 +3,11 @@ import glob
 import pandas as pd
 import numpy as np
 from datetime import datetime
-from sqlalchemy import text
 from scripts.database import engine
 import re
 import io
 import uuid
 import logging
-from sqlalchemy.dialects.postgresql import insert
 
 CACHE_DIR = "offline_data_cache/master_archives"
 
@@ -85,74 +83,41 @@ def parse_trade_events(file_path, event_type):
     return df
 
 
-def push_chunk_to_db(df, file_name="Unknown_Events_File"):
-    if df.empty:
-        log_audit(file_name, 0, 0, 0, "SKIPPED_EMPTY")
-        return
+def push_chunk_to_db(df, file_name):
+    raw_count = len(df)
 
-    raw_count = len(df)  # Track incoming rows
+    # Register zero-copy DataFrame in DuckDB
+    engine.register("temp_events", df)
 
-    # 1. Exact Match to your SQLAlchemy Model (Case-Sensitive)
-    final_columns = [
-        "ReportDate",
-        "Ticker",
-        "EventType",
-        "SecurityName",
-        "ClientName",
-        "TransactionType",
-        "Quantity",
-        "TradePrice",
-        "Remarks",
-    ]
+    print(
+        f"\\n[DB PUSH] Upserting {raw_count} rows from {file_name} into 'trade_events_ledger'..."
+    )
 
-    for col in final_columns:
-        if col not in df.columns:
-            df[col] = None
-
-    df = df[final_columns]
-    df = clean_for_db(df)
-
-    # 2. In-memory deduplication
-    pk_cols = [
-        "ReportDate",
-        "Ticker",
-        "ClientName",
-        "TransactionType",
-        "Quantity",
-        "TradePrice",
-    ]
-    df = df.drop_duplicates(subset=pk_cols, keep="last")
-    dedup_count = len(df)
-
-    print(f"    -> [BULK PUSH] Upserting {len(df)} rows into 'trade_events_ledger'...")
-
-    # Notice: NO lowercasing hack here. We leave the DataFrame columns as CamelCase.
-
-    # 3. Define the Native PostgreSQL Upsert Logic
-    def postgres_upsert(table, conn, keys, data_iter):
-        data = [dict(zip(keys, row)) for row in data_iter]
-        insert_stmt = insert(table.table).values(data)
-
-        upsert_stmt = insert_stmt.on_conflict_do_nothing(
-            constraint="unique_trade_event"
-        )
-        conn.execute(upsert_stmt)
-
-    # 4. Execute using native Pandas integration
     try:
-        df.to_sql(
-            "trade_events_ledger",
-            con=engine,
-            if_exists="append",
-            index=False,
-            chunksize=5000,
-            method=postgres_upsert,
-        )
-        log_audit(file_name, raw_count, dedup_count, dedup_count, "SUCCESS")
+        # Native DuckDB Insert or Ignore
+        # Bypasses existing duplicates based on the UNIQUE constraint defined in database.py
+        engine.execute("""
+            INSERT OR IGNORE INTO trade_events_ledger (
+                "ReportDate", "Ticker", "EventType", "SecurityName", 
+                "ClientName", "TransactionType", "Quantity", "TradePrice", "Remarks"
+            )
+            SELECT 
+                "ReportDate", "Ticker", "EventType", "SecurityName", 
+                "ClientName", "TransactionType", "Quantity", "TradePrice", "Remarks"
+            FROM temp_events;
+        """)
+
+        # Cleanup
+        engine.unregister("temp_events")
+
+        log_audit(file_name, raw_count, raw_count, raw_count, "SUCCESS")
+        print(f"  [+] Success.")
+
     except Exception as e:
-        error_msg = str(e).replace("\n", " ")[:80]
-        log_audit(file_name, raw_count, dedup_count, 0, f"FAILED: {error_msg}")
-        print(f"    [-] CRITICAL Bulk Push Error: {e}")
+        error_msg = str(e).replace("\\n", " ")[:80]
+        log_audit(file_name, raw_count, raw_count, 0, f"FAILED: {error_msg}")
+        print(f"  [X] Failed: {error_msg}")
+        engine.unregister("temp_events")
 
 
 def execute_events_pipeline(start_date_str="1900-01-01"):

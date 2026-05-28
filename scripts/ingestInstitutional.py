@@ -2,8 +2,7 @@ import os
 import glob
 import pandas as pd
 import numpy as np
-from datetime import datetime
-from sqlalchemy import text
+
 from scripts.database import engine  # Ensure this points to your SQLAlchemy engine
 import re
 from sqlalchemy.dialects.postgresql import insert
@@ -223,32 +222,38 @@ def execute_macro_pipeline(start_date_str="1900-01-01"):
         f"\n[DB PUSH] Upserting {len(master_macro_df)} rows into 'institutional_ledger'..."
     )
 
-    def postgres_upsert(table, conn, keys, data_iter):
-        data = [dict(zip(keys, row)) for row in data_iter]
-        insert_stmt = insert(table.table).values(data)
-        update_dict = {c.name: c for c in insert_stmt.excluded if c.name not in pk_cols}
-        upsert_stmt = insert_stmt.on_conflict_do_update(
-            index_elements=pk_cols, set_=update_dict
-        )
-        conn.execute(upsert_stmt)
-
     try:
-        master_macro_df.to_sql(
-            "institutional_ledger",
-            con=engine,
-            if_exists="append",
-            index=False,
-            chunksize=5000,
-            method=postgres_upsert,
-        )
+        # Register zero-copy DataFrame
+        engine.register("temp_inst", master_macro_df)
+
+        # Dynamically build update clause for all metrics
+        conflict_keys = ["ReportDate", "ClientType"]
+        update_cols = [
+            col for col in master_macro_df.columns if col not in conflict_keys
+        ]
+        set_clause = ", ".join([f'"{col}" = EXCLUDED."{col}"' for col in update_cols])
+
+        # Native DuckDB Upsert
+        engine.execute(f"""
+            INSERT INTO institutional_ledger 
+            SELECT * FROM temp_inst
+            ON CONFLICT ("ReportDate", "ClientType") 
+            DO UPDATE SET {set_clause};
+        """)
+
+        engine.unregister("temp_inst")
+
         log_audit("Batch_Macro_Concat", raw_count, dedup_count, dedup_count, "SUCCESS")
         print("[SUCCESS] Institutional Ledger Update Complete.")
+
     except Exception as e:
-        error_msg = str(e).replace("\n", " ")[:80]
+        error_msg = str(e).replace("\\n", " ")[:80]
         log_audit(
             "Batch_Macro_Concat", raw_count, dedup_count, 0, f"FAILED: {error_msg}"
         )
-        print(f"    [-] CRITICAL Bulk Push Error: {e}")
+        print(f"  [X] Failed: {error_msg}")
+        if "temp_inst" in engine.execute("SHOW TABLES").df().values:
+            engine.unregister("temp_inst")
 
 
 if __name__ == "__main__":

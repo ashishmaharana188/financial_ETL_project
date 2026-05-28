@@ -63,7 +63,7 @@ def get_active_global_assets():
     """
     try:
         with engine.connect() as conn:
-            return pd.read_sql(text(query), conn)
+            return engine.execute(text(query), conn).df()
     except Exception as e:
         print(f"[ERROR] Failed to fetch equities from DB: {e}")
         return pd.DataFrame()

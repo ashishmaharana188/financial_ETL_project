@@ -31,9 +31,9 @@ def fetch_ccc(ticker: str, data_source: str) -> pd.DataFrame:
         FROM ccc_data
         ORDER BY "ReportDate" DESC;
     """)
-    return pd.read_sql(
-        query, engine, params={"ticker": ticker, "data_source": data_source}
-    )
+    return engine.execute(
+        query, params={"ticker": ticker, "data_source": data_source}
+    ).df()
 
 
 def fetch_debt_to_equity(ticker: str, data_source: str) -> pd.DataFrame:
@@ -54,9 +54,9 @@ def fetch_debt_to_equity(ticker: str, data_source: str) -> pd.DataFrame:
           
         ORDER BY "ReportDate" DESC;
     """)
-    return pd.read_sql(
-        query, engine, params={"ticker": ticker, "data_source": data_source}
-    )
+    return engine.execute(
+        query, params={"ticker": ticker, "data_source": data_source}
+    ).dF()
 
 
 def fetch_roic(ticker: str, data_source: str) -> pd.DataFrame:
@@ -83,9 +83,9 @@ def fetch_roic(ticker: str, data_source: str) -> pd.DataFrame:
         FROM roic_components
         ORDER BY "ReportDate" DESC;
     """)
-    return pd.read_sql(
-        query, engine, params={"ticker": ticker, "data_source": data_source}
-    )
+    return engine.execute(
+        query, params={"ticker": ticker, "data_source": data_source}
+    ).df()
 
 
 def fetch_fcf_yield(ticker: str, data_source: str) -> pd.DataFrame:
@@ -100,9 +100,9 @@ def fetch_fcf_yield(ticker: str, data_source: str) -> pd.DataFrame:
           
         ORDER BY "ReportDate" DESC;
     """)
-    df = pd.read_sql(
-        query, engine, params={"ticker": ticker, "data_source": data_source}
-    )
+    df = engine.execute(
+        query, params={"ticker": ticker, "data_source": data_source}
+    ).df()
 
     if not df.empty:
         try:
@@ -183,9 +183,9 @@ def fetch_dol(ticker: str, data_source: str) -> pd.DataFrame:
         FROM pct_changes
         ORDER BY "ReportDate" DESC;
     """)
-    return pd.read_sql(
-        query, engine, params={"ticker": ticker, "data_source": data_source}
-    )
+    return engine.execute(
+        query, params={"ticker": ticker, "data_source": data_source}
+    ).df()
 
 
 # PHASE 2: TACTICAL RESPONDERS (QUARTERLY TABLES)
@@ -218,9 +218,9 @@ def fetch_cfo_to_pat(ticker: str, data_source: str) -> pd.DataFrame:
         FROM cfo_pat_data
         ORDER BY "ReportDate" DESC;
     """)
-    return pd.read_sql(
-        query, engine, params={"ticker": ticker, "data_source": data_source}
-    )
+    return engine.execute(
+        query, params={"ticker": ticker, "data_source": data_source}
+    ).df()
 
 
 def fetch_operating_margin(ticker: str, data_source: str) -> pd.DataFrame:
@@ -236,9 +236,9 @@ def fetch_operating_margin(ticker: str, data_source: str) -> pd.DataFrame:
           
         ORDER BY "ReportDate" DESC;
     """)
-    return pd.read_sql(
-        query, engine, params={"ticker": ticker, "data_source": data_source}
-    )
+    return engine.execute(
+        query, params={"ticker": ticker, "data_source": data_source}
+    ).df()
 
 
 def fetch_gross_margin(ticker: str, data_source: str) -> pd.DataFrame:
@@ -254,9 +254,9 @@ def fetch_gross_margin(ticker: str, data_source: str) -> pd.DataFrame:
           
         ORDER BY "ReportDate" DESC;
     """)
-    return pd.read_sql(
-        query, engine, params={"ticker": ticker, "data_source": data_source}
-    )
+    return engine.execute(
+        query, params={"ticker": ticker, "data_source": data_source}
+    ).df()
 
 
 def fetch_interest_coverage(ticker: str, data_source: str) -> pd.DataFrame:
@@ -275,7 +275,7 @@ def fetch_interest_coverage(ticker: str, data_source: str) -> pd.DataFrame:
         ORDER BY "ReportDate" ASC;
     """)
 
-    df = pd.read_sql(query, engine, params={"ticker": ticker})
+    df = engine.execute(query, params={"ticker": ticker}).df()
 
     if not df.empty:
         # 1. Fill NaNs with 0
@@ -310,9 +310,9 @@ def fetch_asset_turnover(ticker: str, data_source: str) -> pd.DataFrame:
         FROM at_data
         ORDER BY "ReportDate" DESC;
     """)
-    return pd.read_sql(
-        query, engine, params={"ticker": ticker, "data_source": data_source}
-    )
+    return engine.execute(
+        query, params={"ticker": ticker, "data_source": data_source}
+    ).df()
 
 
 def fetch_revenue_growth_yoy(ticker: str, data_source: str) -> pd.DataFrame:
@@ -339,7 +339,7 @@ def fetch_revenue_growth_yoy(ticker: str, data_source: str) -> pd.DataFrame:
         ORDER BY "ReportDate" ASC;
     """)
 
-    return pd.read_sql(query, engine, params={"ticker": ticker})
+    return engine.execute(query, params={"ticker": ticker}).df()
 
 
 def fetch_fcf_margin(ticker: str, data_source: str) -> pd.DataFrame:
@@ -360,7 +360,7 @@ def fetch_fcf_margin(ticker: str, data_source: str) -> pd.DataFrame:
         ORDER BY i."ReportDate" ASC;
     """)
 
-    return pd.read_sql(query, engine, params={"ticker": ticker})
+    return engine.execute(query, params={"ticker": ticker}).df()
 
 
 def fetch_piotroski_f_score(ticker: str, engine) -> pd.DataFrame:
@@ -429,7 +429,7 @@ def fetch_piotroski_f_score(ticker: str, engine) -> pd.DataFrame:
         ORDER BY "ReportDate" DESC;
     """)
 
-    df = pd.read_sql(query, engine, params={"ticker": ticker})
+    df = engine.execute(query, params={"ticker": ticker}).df()
     if df.empty:
         return pd.DataFrame(columns=["ReportDate", "Piotroski_F_Score"])
 
@@ -540,4 +540,4 @@ def fetch_beneish_m_score(ticker: str, engine) -> pd.DataFrame:
         ORDER BY "ReportDate" DESC;
     """)
 
-    return pd.read_sql(query, engine, params={"ticker": ticker})
+    return engine.execute(query, params={"ticker": ticker}).df()

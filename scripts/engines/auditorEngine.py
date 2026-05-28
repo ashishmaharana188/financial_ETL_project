@@ -4,7 +4,6 @@ from sqlalchemy import text, MetaData, Table, Column, String, Date, Float, Boole
 from sqlalchemy.dialects.postgresql import insert
 from scripts.database import engine
 
-
 metadata = MetaData()
 validation_ledger = Table(
     "validation_ledger",
@@ -48,7 +47,7 @@ class SystemicAuditor:
               AND p.asof_date <= CURRENT_DATE - INTERVAL '30 days' -- Buffer for maximum horizon
         """)
         with engine.connect() as conn:
-            return pd.read_sql(query, conn)
+            return engine.execute(query, conn).df()
 
     def fetch_realized_price_path(
         self, ticker: str, start_date: str, days: int
@@ -65,7 +64,7 @@ class SystemicAuditor:
         """)
         with engine.connect() as conn:
             # We fetch days + 1 because the first row is T+0 (the prediction date)
-            return pd.read_sql(
+            return engine.execute(
                 query,
                 conn,
                 params={"ticker": ticker, "start_date": start_date, "limit": days + 1},

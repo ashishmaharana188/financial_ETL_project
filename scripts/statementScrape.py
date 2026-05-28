@@ -14,9 +14,7 @@ from sqlalchemy.dialects.postgresql import insert
 from scripts.ai_agent import trigger_semantic_router
 from scripts.reconciliation import extract_mapped_keys, execute_three_way_match
 from scripts.ai_agent import trigger_semantic_router
-from sqlalchemy import text
-from sqlalchemy.dialects.postgresql import insert
-from scripts.database import engine, raw_financials, market_metadata
+from scripts.database import engine
 from scripts.reconciliation import extract_mapped_keys, execute_three_way_match
 from sqlalchemy import text
 from scripts.modelRuntime import runtime
@@ -84,23 +82,37 @@ else:
 
 
 # Define the Custom Upsert Logic
-def postgres_upsert(table, conn, keys, data_iter):
+def duckdb_upsert(df: pd.DataFrame, table_name: str, conflict_keys: list):
+    """
+    Executes a zero-copy native Upsert from Pandas to DuckDB.
+    """
+    if df is None or df.empty:
+        return
 
-    data = [dict(zip(keys, row)) for row in data_iter]
+    # 1. Register the DataFrame as a zero-copy virtual table
+    engine.register("temp_upsert_view", df)
 
-    insert_stmt = insert(table.table).values(data)
+    # 2. Dynamically build the ON CONFLICT DO UPDATE clause
+    update_cols = [col for col in df.columns if col not in conflict_keys]
 
-    update_dict = {
-        c.name: getattr(insert_stmt.excluded, c.name)
-        for c in table.table.columns
-        if c.name not in ("Ticker", "ReportDate")
-    }
+    # If there are columns to update, format them. Otherwise, do nothing on conflict.
+    if update_cols:
+        set_clause = ", ".join([f'"{col}" = EXCLUDED."{col}"' for col in update_cols])
+        conflict_str = ", ".join([f'"{k}"' for k in conflict_keys])
 
-    upsert_stmt = insert_stmt.on_conflict_do_update(
-        index_elements=["Ticker", "ReportDate", "DataSource"], set_=update_dict
-    )
+        query = f"""
+            INSERT INTO {table_name} 
+            SELECT * FROM temp_upsert_view
+            ON CONFLICT ({conflict_str}) 
+            DO UPDATE SET {set_clause};
+        """
+    else:
+        # Fallback for tables where we only insert new records and don't update existing
+        query = f"INSERT OR IGNORE INTO {table_name} SELECT * FROM temp_upsert_view;"
 
-    conn.execute(upsert_stmt)
+    # 3. Execute and cleanup
+    engine.execute(query)
+    engine.unregister("temp_upsert_view")
 
 
 ## Yfinance
@@ -805,52 +817,30 @@ def map_statement_via_dictionary(df, synonym_map, target_columns, bucket_columns
     return pd.DataFrame(mapped_data).T
 
 
-def store_raw_data_jsonb(
-    ticker, data_source, statement_type, raw_df, conn_engine, table_def
-):
-    if raw_df is None or (isinstance(raw_df, pd.DataFrame) and raw_df.empty):
+def store_raw_data_jsonb(ticker, data_source, statement_type, clean_df):
+    """Native DuckDB JSON Upsert."""
+    if clean_df is None or clean_df.empty:
         return
 
-    df = pd.DataFrame(raw_df) if isinstance(raw_df, dict) else raw_df.copy()
-    df = df.T
+    for _, row in clean_df.iterrows():
+        report_date = row.get("ReportDate")
+        if pd.isna(report_date):
+            continue
 
-    df.columns = [to_pascal_case(str(col)) for col in df.columns]
+        clean_row = row.where(pd.notnull(row), None).to_dict()
+        json_string = json.dumps(clean_row)
 
-    df.index = pd.to_datetime(df.index, errors="coerce")
-    df = df[df.index.notna()]
-    df.index = (df.index + pd.offsets.MonthEnd(0)).strftime("%Y-%m-%d")
-
-    records = []
-    for date_str, row in df.iterrows():
-        clean_row = row.dropna().to_dict()
-        records.append(
-            {
-                "DataSource": data_source,
-                "Ticker": ticker,
-                "ReportDate": date_str,
-                "StatementType": statement_type,
-                "RawData": clean_row,
-            }
+        engine.execute(
+            """
+            INSERT INTO raw_financials ("DataSource", "Ticker", "ReportDate", "StatementType", "RawData")
+            VALUES ($1, $2, $3, $4, CAST($5 AS JSON))
+            ON CONFLICT ("Ticker", "ReportDate", "StatementType") 
+            DO UPDATE SET 
+                "RawData" = EXCLUDED."RawData",
+                "DataSource" = EXCLUDED."DataSource";
+        """,
+            [data_source, ticker, str(report_date), statement_type, json_string],
         )
-
-    if not records:
-        return
-
-    insert_stmt = insert(table_def).values(records)
-    upsert_stmt = insert_stmt.on_conflict_do_update(
-        index_elements=["Ticker", "ReportDate", "StatementType"],
-        set_={
-            "RawData": insert_stmt.excluded.RawData,
-            "DataSource": insert_stmt.excluded.DataSource,
-        },
-    )
-
-    with conn_engine.begin() as conn:
-        conn.execute(upsert_stmt)
-
-    print(
-        f"      [BRONZE VAULT] Saved {len(records)} raw {statement_type} records for {ticker}."
-    )
 
 
 ## FALLBACK FUNTIONS
@@ -1888,28 +1878,16 @@ def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
 
             print(f"[{ticker}] Backing up raw data to JSONB Vault...")
 
-            store_raw_data_jsonb(
-                ticker, source, "IS_Y", dfIncomeStatementY, engine, raw_financials
-            )
-            store_raw_data_jsonb(
-                ticker, source, "BS_Y", dfBalanceSheetY, engine, raw_financials
-            )
-            store_raw_data_jsonb(
-                ticker, source, "CF_Y", dfCashFlowY, engine, raw_financials
-            )
+            store_raw_data_jsonb(ticker, source, "IS_Y", dfIncomeStatementY)
+            store_raw_data_jsonb(ticker, source, "BS_Y", dfBalanceSheetY)
+            store_raw_data_jsonb(ticker, source, "CF_Y", dfCashFlowY)
 
             if dfIncomeStatementQ is not None:
-                store_raw_data_jsonb(
-                    ticker, source, "IS_Q", dfIncomeStatementQ, engine, raw_financials
-                )
+                store_raw_data_jsonb(ticker, source, "IS_Q", dfIncomeStatementQ)
             if dfBalanceSheetQ is not None:
-                store_raw_data_jsonb(
-                    ticker, source, "BS_Q", dfBalanceSheetQ, engine, raw_financials
-                )
+                store_raw_data_jsonb(ticker, source, "BS_Q", dfBalanceSheetQ)
             if dfCashFlowQ is not None:
-                store_raw_data_jsonb(
-                    ticker, source, "CF_Q", dfCashFlowQ, engine, raw_financials
-                )
+                store_raw_data_jsonb(ticker, source, "CF_Q", dfCashFlowQ)
 
             print(f"[{ticker}] Cleaning and Mapping Data for Silver Tables...")
 
@@ -2369,65 +2347,49 @@ def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
             # UPSERT TO POSTGRES
             print(f"[{ticker}] Upserting Validated Data to Postgres...")
 
-            clean_yearly_income_statement.to_sql(
-                name="yearly_income_statement",
-                con=engine,
-                schema="public",
-                if_exists="append",
-                index=False,
-                method=postgres_upsert,
+            duckdb_upsert(
+                df=clean_yearly_income_statement,
+                table_name="yearly_income_statement",
+                conflict_keys=["Ticker", "ReportDate"],
             )
-            clean_yearly_balance_sheet.to_sql(
-                name="yearly_balance_sheet",
-                con=engine,
-                schema="public",
-                if_exists="append",
-                index=False,
-                method=postgres_upsert,
+
+            duckdb_upsert(
+                df=clean_yearly_balance_sheet,
+                table_name="yearly_balance_sheet",
+                conflict_keys=["Ticker", "ReportDate"],
             )
-            clean_yearly_cash_flow.to_sql(
-                name="yearly_cash_flow",
-                con=engine,
-                schema="public",
-                if_exists="append",
-                index=False,
-                method=postgres_upsert,
+
+            duckdb_upsert(
+                df=clean_yearly_cash_flow,
+                table_name="yearly_cash_flow",
+                conflict_keys=["Ticker", "ReportDate"],
             )
-            clean_yearly_indirect_cash_flow.to_sql(
-                name="yearly_indirect_cash_flow",
-                con=engine,
-                schema="public",
-                if_exists="append",
-                index=False,
-                method=postgres_upsert,
+
+            duckdb_upsert(
+                df=clean_yearly_indirect_cash_flow,
+                table_name="yearly_indirect_cash_flow",
+                conflict_keys=["Ticker", "ReportDate"],
             )
 
             if dfIncomeStatementQ is not None:
-                clean_quarterly_income_statement.to_sql(
-                    name="quarterly_income_statement",
-                    con=engine,
-                    schema="public",
-                    if_exists="append",
-                    index=False,
-                    method=postgres_upsert,
+                duckdb_upsert(
+                    df=clean_quarterly_income_statement,
+                    table_name="quarterly_income_statement",
+                    conflict_keys=["Ticker", "ReportDate"],
                 )
+
             if dfBalanceSheetQ is not None:
-                clean_quarterly_balance_sheet.to_sql(
-                    name="quarterly_balance_sheet",
-                    con=engine,
-                    schema="public",
-                    if_exists="append",
-                    index=False,
-                    method=postgres_upsert,
+                duckdb_upsert(
+                    df=clean_quarterly_balance_sheet,
+                    table_name="quarterly_balance_sheet",
+                    conflict_keys=["Ticker", "ReportDate"],
                 )
+
             if dfCashFlowQ is not None:
-                clean_quarterly_cash_flow.to_sql(
-                    name="quarterly_cash_flow",
-                    con=engine,
-                    schema="public",
-                    if_exists="append",
-                    index=False,
-                    method=postgres_upsert,
+                duckdb_upsert(
+                    df=clean_quarterly_cash_flow,
+                    table_name="quarterly_cash_flow",
+                    conflict_keys=["Ticker", "ReportDate"],
                 )
 
             print(f"[{ticker}] Processing complete. Pausing for rate limits...")

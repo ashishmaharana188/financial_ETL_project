@@ -5,11 +5,7 @@ import zipfile
 import io
 import pandas as pd
 import numpy as np
-from datetime import datetime
-from sqlalchemy import text
-from scripts.database import engine  # Ensure this points to your SQLAlchemy engine
-from sqlalchemy.dialects.postgresql import insert
-import re
+from scripts.database import engine
 import io
 import uuid
 import logging
@@ -268,144 +264,46 @@ def parse_mcx(file_path):
     return df
 
 
-def push_chunk_to_db(df, file_name="Unknown_File"):
-    """Bypasses SQLAlchemy text-parsing and uses psycopg2 COPY for 100x throughput."""
-    if df.empty:
+def push_chunk_to_db(df, file_name):
+    if df is None or df.empty:
         log_audit(file_name, 0, 0, 0, "SKIPPED_EMPTY")
         return
 
-    raw_count = len(df)  # Track incoming rows
+    raw_count = len(df)
 
-    final_columns = [
-        "Ticker",
-        "ReportDate",
-        "InstrumentType",
-        "ExpiryDate",
-        "StrikePrice",
-        "Open",
-        "High",
-        "Low",
-        "Close",
-        "Volume",
-        "Exchange_Series",
-        "Turnover",
-        "No_Of_Trades",
-        "Delivery_Qty",
-        "Delivery_Percentage",
-        "Short_Volume",
-        "OptionType",
-        "Open_Interest",
-        "Change_In_OI",
-        "Settlement_Price",
-        "Underlying_Price",
-    ]
-
-    for col in final_columns:
-        if col not in df.columns:
-            df[col] = None
-
-    df = df[final_columns]
-    df = clean_for_db(df)
-
-    # Clean duplicates in Python first
-    pk_cols = [
-        "Ticker",
-        "ReportDate",
-        "InstrumentType",
-        "ExpiryDate",
-        "StrikePrice",
-        "OptionType",
-        "Exchange_Series",
-    ]
-
-    df = df.dropna(subset=["ReportDate"])
-
-    # 2. Strip hidden spaces to prevent logical string mismatches
-    str_pk_cols = ["Ticker", "InstrumentType", "OptionType", "Exchange_Series"]
-    for col in str_pk_cols:
-        if col in df.columns:
-            # Re-convert to NaN if it was a genuine null string like "nan" or "None"
-            df[col] = (
-                df[col].astype(str).str.strip().replace({"nan": np.nan, "None": np.nan})
-            )
-
-    df["Ticker"] = df["Ticker"].fillna("UNKNOWN")
-    df["InstrumentType"] = df["InstrumentType"].fillna("XX")
-    df["OptionType"] = df["OptionType"].fillna("XX")
-    df["Exchange_Series"] = df["Exchange_Series"].fillna("XX")
-    df["StrikePrice"] = df["StrikePrice"].fillna(0.0)
-    df["ExpiryDate"] = df["ExpiryDate"].fillna(pd.to_datetime("2099-12-31").date())
-
-    pk_cols = [
-        "Ticker",
-        "ReportDate",
-        "InstrumentType",
-        "ExpiryDate",
-        "StrikePrice",
-        "OptionType",
-        "Exchange_Series",
-    ]
-
+    # 1. Enforce Primary Key level deduplication in Pandas before hitting DB
+    pk_cols = ["Ticker", "ReportDate", "InstrumentType", "ExpiryDate", "StrikePrice"]
     df = df.drop_duplicates(subset=pk_cols, keep="last")
     dedup_count = len(df)
 
-    print(f"    -> [BULK PUSH] Streaming {len(df)} rows to DB via COPY protocol...")
-
-    # 1. Dump DataFrame to an in-memory CSV buffer (Tab separated handles commas in text safely)
-    csv_buffer = io.StringIO()
-    df.to_csv(csv_buffer, index=False, header=True, sep="\t", na_rep="\\N")
-    csv_buffer.seek(0)
-
-    # Unique temp table name for thread safety
-    temp_table = f"temp_master_{uuid.uuid4().hex[:8]}"
-
-    # 2. Get the raw psycopg2 connection from SQLAlchemy
-    raw_conn = engine.raw_connection()
     try:
-        with raw_conn.cursor() as cur:
-            # Create a temporary table that perfectly mimics our master table.
-            # ON COMMIT DROP ensures it deletes itself immediately after the transaction.
-            cur.execute(
-                f"CREATE TEMP TABLE {temp_table} (LIKE unified_market_master INCLUDING ALL) ON COMMIT DROP;"
-            )
+        # 2. Register zero-copy DataFrame
+        engine.register("temp_matrix", df)
 
-            # 3. Stream data from Python RAM directly into Postgres Engine
-            cur.copy_expert(
-                f"COPY {temp_table} FROM STDIN WITH CSV HEADER DELIMITER '\t' NULL '\\N'",
-                csv_buffer,
-            )
+        # 3. Dynamically build update clause
+        update_cols = [col for col in df.columns if col not in pk_cols]
+        set_clause = ", ".join([f'"{col}" = EXCLUDED."{col}"' for col in update_cols])
 
-            # 4. Construct internal Upsert query
-            columns = ", ".join([f'"{col}"' for col in df.columns])
-            set_clause = ", ".join(
-                [
-                    f'"{col}" = EXCLUDED."{col}"'
-                    for col in df.columns
-                    if col not in pk_cols
-                ]
-            )
+        # 4. Native DuckDB Upsert (Instant Columnar Transfer)
+        engine.execute(f"""
+            INSERT INTO unified_market_master 
+            SELECT * FROM temp_matrix
+            ON CONFLICT ("Ticker", "ReportDate", "InstrumentType", "ExpiryDate", "StrikePrice") 
+            DO UPDATE SET {set_clause};
+        """)
 
-            upsert_query = f"""
-                INSERT INTO unified_market_master ({columns})
-                SELECT {columns} FROM {temp_table}
-                ON CONFLICT ("Ticker", "ReportDate", "InstrumentType", "ExpiryDate", "StrikePrice", "OptionType", "Exchange_Series")
-                DO UPDATE SET {set_clause};
-            """
-            cur.execute(upsert_query)
+        # 5. Cleanup
+        engine.unregister("temp_matrix")
 
-        raw_conn.commit()
-        log_audit(
-            file_name, raw_count, dedup_count, dedup_count, "SUCCESS"
-        )  # UPDATE 4: Log Success
+        log_audit(file_name, raw_count, dedup_count, dedup_count, "SUCCESS")
+        print(f"    [+] Pushed {dedup_count} rows.")
+
     except Exception as e:
-        raw_conn.rollback()
-        error_msg = str(e).replace("\n", " ")[:80]
-        log_audit(
-            file_name, raw_count, dedup_count, 0, f"FAILED: {error_msg}"
-        )  # UPDATE 5: Log Failure
-        print(f"    [-] CRITICAL Bulk Push Error: {e}")
-    finally:
-        raw_conn.close()
+        error_msg = str(e).replace("\\n", " ")[:80]
+        log_audit(file_name, raw_count, dedup_count, 0, f"FAILED: {error_msg}")
+        print(f"    [-] DB Push Failed: {error_msg}")
+        if "temp_matrix" in engine.execute("SHOW TABLES").df().values:
+            engine.unregister("temp_matrix")
 
 
 def execute_pipeline(start_date_str="1900-01-01"):

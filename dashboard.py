@@ -370,9 +370,9 @@ elif app_mode == "Engines":
 
     try:
         with engine.connect() as conn:
-            tickers_df = pd.read_sql(
+            tickers_df = engine.execute(
                 'SELECT "Ticker" FROM market_metadata WHERE "IsActive" = TRUE', conn
-            )
+            ).df()
             available_db_tickers = tickers_df["Ticker"].tolist()
     except Exception as e:
         available_db_tickers = []
@@ -445,10 +445,10 @@ elif app_mode == "Market Overview":
 
     try:
         with engine.connect() as conn:
-            sectors_df = pd.read_sql(
+            sectors_df = engine.execute(
                 'SELECT DISTINCT "Sector" FROM company_profiles WHERE "Sector" IS NOT NULL',
                 conn,
-            )
+            ).df()
             available_sectors = ["All Market"] + sectors_df["Sector"].tolist()
     except Exception:
         available_sectors = ["All Market"]
@@ -463,7 +463,7 @@ elif app_mode == "Market Overview":
                         query = 'SELECT "Ticker", "CompanyName" FROM company_profiles'
                     else:
                         query = f'SELECT "Ticker", "CompanyName" FROM company_profiles WHERE "Sector" = \'{selected_sector}\''
-                    target_companies = pd.read_sql(query, conn)
+                    target_companies = engine.execute(query, conn)
             except Exception as e:
                 st.error(f"Failed to query sectors: {e}")
                 target_companies = pd.DataFrame()

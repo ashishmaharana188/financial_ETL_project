@@ -1,422 +1,413 @@
-from sqlalchemy.dialects.postgresql import JSONB, insert
-from sqlalchemy import (
-    Column,
-    String,
-    Date,
-    Table,
-    DateTime,
-    Float,
-    BigInteger,
-    TIMESTAMP,
-    create_engine,
-    Numeric,
-    MetaData,
-    Boolean,
-    text,
-    Integer,
-    UniqueConstraint,
-)
-import pandas as pd
+import duckdb
 from datetime import datetime, timedelta
 
-# Setup Engine
-engine = create_engine("postgresql+psycopg2://postgres:123456@localhost:5432/postgres")
-
-# Setup Metadata
-metadata = MetaData(schema="public")
-
-market_metadata = Table(
-    "market_metadata",
-    metadata,
-    Column("Ticker", String(50), primary_key=True, index=True),
-    Column("IndicatorName", String(100), nullable=True),
-    Column("TargetTable", String(50), nullable=False),
-    Column("Sector", String(100)),
-    Column("Industry", String(100)),
-    Column(
-        "AssetClass", String(50), nullable=False
-    ),  # 'Equity', 'Macro_Index', 'Volatility'
-    Column("Exchange", String(50)),
-    Column("IsActive", Boolean, default=True),
-    Column("valid_data_since", Date),
-    Column("Description", String(255)),
-)
-
-macro_daily_ledger = Table(
-    "macro_daily_ledger",
-    metadata,
-    Column(
-        "IndicatorName", String(100), primary_key=True, index=True
-    ),  # 'US_10Y_Yield'
-    Column(
-        "ReportDate", Date, primary_key=True, index=True
-    ),  # Stored purely as YYYY-MM-DD
-    Column("Open", Float, nullable=True),
-    Column("High", Float, nullable=True),
-    Column("Low", Float, nullable=True),
-    Column("Close_Value", Float, nullable=False),
-    Column("Volume", BigInteger, nullable=True),
-)
-
-macro_intraday_ledger = Table(
-    "macro_intraday_ledger",
-    metadata,
-    Column(
-        "IndicatorName", String(100), primary_key=True, index=True
-    ),  # 'US_10Y_Yield'
-    Column(
-        "ReportDate", TIMESTAMP, primary_key=True, index=True
-    ),  # Includes exact Hr:Min:Sec
-    Column("Timeframe", String(10), primary_key=True, index=True),  # '1h', '30m', '5m'
-    Column("Open", Float, nullable=True),
-    Column("High", Float, nullable=True),
-    Column("Low", Float, nullable=True),
-    Column("Close_Value", Float, nullable=False),
-    Column("Volume", BigInteger, nullable=True),
-)
-
-# --- ADD THIS BLOCK TO YOUR EXISTING TABLE DEFINITIONS ---
-prediction_ledger = Table(
-    "prediction_ledger",
-    metadata,
-    Column("engine_name", String, primary_key=True),
-    Column("ticker", String, primary_key=True),
-    Column("asof_date", Date, primary_key=True),
-    Column("horizon", String, primary_key=True),  # e.g., '2D', '5D', '20D'
-    Column("signal", String),  # 'BUY', 'WATCH', 'AVOID', 'SHORT-BIAS'
-    Column("score", Float),  # Normalized score (e.g., -1.0 to 1.0)
-    Column("confidence", Float),  # 0.0 to 1.0
-    Column("veto_flag", Boolean, default=False),
-    Column("penalty", Float, default=0.0),
-    Column("target_metric", String),  # Expected return band
-    Column("reason_json", JSONB),  # Text explanation of drivers
-    Column("feature_json", JSONB),  # Raw input metrics
-    Column("data_quality_score", Float),
-    Column("created_at", DateTime, default=datetime.utcnow),
-)
-
-global_assets_daily = Table(
-    "global_assets_daily",
-    metadata,
-    Column("Ticker", String(100), primary_key=True, index=True),
-    Column("ReportDate", Date, primary_key=True, index=True),
-    Column("AssetClass", String(50), nullable=True),  # 'US Equity', 'Index', 'Crypto'
-    Column("Open", Float, nullable=True),
-    Column("High", Float, nullable=True),
-    Column("Low", Float, nullable=True),
-    Column("Close", Float, nullable=False),
-    Column("Volume", BigInteger, nullable=True),
-)
-
-global_assets_intraday = Table(
-    "global_assets_intraday",
-    metadata,
-    Column("Ticker", String(100), primary_key=True, index=True),
-    Column("ReportDate", TIMESTAMP, primary_key=True, index=True),
-    Column("Timeframe", String(10), primary_key=True, index=True),
-    Column("Open", Float, nullable=True),
-    Column("High", Float, nullable=True),
-    Column("Low", Float, nullable=True),
-    Column("Close", Float, nullable=False),
-    Column("Volume", BigInteger, nullable=True),
-)
-
-unified_market_master = Table(
-    "unified_market_master",
-    metadata,
-    # --- COMPOSITE PRIMARY KEY (Prevents Overwriting) ---
-    Column("Ticker", String(100), primary_key=True, index=True),
-    Column("ReportDate", TIMESTAMP, primary_key=True, index=True),
-    Column(
-        "InstrumentType", String(20), primary_key=True, index=True
-    ),  # 'CASH', 'FUTSTK', 'OPTIDX', 'FUTCOM', etc.
-    # NOTE: SQL databases do not allow NULL in Primary Keys.
-    # For CASH/Spot assets, your parser should insert a dummy date (e.g., '2099-12-31')
-    # and a strike of 0.0 to safely store them alongside derivatives.
-    Column("ExpiryDate", Date, primary_key=True, index=True),
-    Column("StrikePrice", Float, primary_key=True),
-    # --- STANDARD OHLCV ---
-    Column("Open", Float, nullable=True),
-    Column("High", Float, nullable=True),
-    Column("Low", Float, nullable=True),
-    Column("Close", Float, nullable=True),
-    Column(
-        "Volume", BigInteger, nullable=True
-    ),  # 'TTL_TRD_QNTY', 'CONTRACTS', 'Volume'
-    # --- CASH MARKET ALPHA (nse_cash & nse_short_selling) ---
-    Column("Exchange_Series", String(10), nullable=True),  # 'EQ', 'BE'
-    Column("Turnover", Float, nullable=True),  # 'TURNOVER_LACS', 'VAL_INLAKH', 'Value'
-    Column(
-        "No_Of_Trades", BigInteger, nullable=True
-    ),  # 'NO_OF_TRADES', 'TtlNbOfTxsExctd'
-    Column("Delivery_Qty", BigInteger, nullable=True),  # 'DELIV_QTY'
-    Column("Delivery_Percentage", Float, nullable=True),  # 'DELIV_PER'
-    Column("Short_Volume", BigInteger, nullable=True),  # 'Quantity' from short selling
-    # --- DERIVATIVES ALPHA (F&O & MCX) ---
-    Column("OptionType", String(10), nullable=True),  # 'CE', 'PE'
-    Column(
-        "Open_Interest", BigInteger, nullable=True
-    ),  # 'OpnIntrst', 'OPEN_INT', 'OpenInterest'
-    Column("Change_In_OI", BigInteger, nullable=True),  # 'ChngInOpnIntrst', 'CHG_IN_OI'
-    Column("Settlement_Price", Float, nullable=True),  # 'SttlmPric', 'SETTLE_PR'
-    Column("Underlying_Price", Float, nullable=True),  # 'UndrlygPric'
-)
+DB_PATH = "market_data.duckdb"
 
 
-institutional_ledger = Table(
-    "institutional_ledger",
-    metadata,
-    # --- COMPOSITE PRIMARY KEY ---
-    Column("ReportDate", TIMESTAMP, primary_key=True, index=True),
-    Column(
-        "ClientType", String(50), primary_key=True, index=True
-    ),  # 'FII', 'DII', 'Pro', 'Client'
-    # --- CASH FLOW METRICS (From NiftyTrader FII/DII) ---
-    # Will only be populated when ClientType is 'FII' or 'DII'
-    Column("Cash_Buy_Value", Float, nullable=True),
-    Column("Cash_Sell_Value", Float, nullable=True),
-    Column("Cash_Net_Value", Float, nullable=True),
-    Column("Nifty_Close", Float, nullable=True),
-    # --- DERIVATIVE CONTRACT METRICS (From nse_part_oi) ---
-    # Populated for all Client Types
-    Column("Future_Index_Long", BigInteger, nullable=True),
-    Column("Future_Index_Short", BigInteger, nullable=True),
-    Column("Future_Stock_Long", BigInteger, nullable=True),
-    Column("Future_Stock_Short", BigInteger, nullable=True),
-    Column("Option_Index_Call_Long", BigInteger, nullable=True),
-    Column("Option_Index_Put_Long", BigInteger, nullable=True),
-    Column("Option_Index_Call_Short", BigInteger, nullable=True),
-    Column("Option_Index_Put_Short", BigInteger, nullable=True),
-    Column("Option_Stock_Call_Long", BigInteger, nullable=True),
-    Column("Option_Stock_Put_Long", BigInteger, nullable=True),
-    Column("Option_Stock_Call_Short", BigInteger, nullable=True),
-    Column("Option_Stock_Put_Short", BigInteger, nullable=True),
-    Column("Total_Long_Contracts", BigInteger, nullable=True),
-    Column("Total_Short_Contracts", BigInteger, nullable=True),
-)
+def get_db_connection(read_only=False):
+    """
+    Returns a native DuckDB connection.
+    - read_only=False: Used by Ingestion Scripts (Writers).
+    - read_only=True: Used by Dashboards and Engines for concurrent reading.
+    """
+    con = duckdb.connect(database=DB_PATH, read_only=read_only)
 
-trade_events_ledger = Table(
-    "trade_events_ledger",
-    metadata,
-    # --- SURROGATE PRIMARY KEY ---
-    Column("EventID", Integer, primary_key=True, autoincrement=True),
-    # --- EVENT METADATA ---
-    Column("ReportDate", TIMESTAMP, index=True, nullable=False),
-    Column("Ticker", String(50), index=True, nullable=False),
-    Column("EventType", String(50), nullable=False),
-    # --- TRANSACTION DETAILS ---
-    Column("SecurityName", String(255), nullable=True),
-    Column("ClientName", String(255), nullable=False),
-    Column("TransactionType", String(20), nullable=False),
-    Column("Quantity", BigInteger, nullable=False),
-    Column("TradePrice", Float, nullable=False),
-    Column("Remarks", String(255), nullable=True),
-    # --- THE FIX: ENFORCE UNIQUE TRADES FOR UPSERTS ---
-    UniqueConstraint(
-        "ReportDate",
-        "Ticker",
-        "ClientName",
-        "TransactionType",
-        "Quantity",
-        "TradePrice",
-        name="unique_trade_event",
-    ),
-)
+    # Load required analytical extensions (Required for JSON columns)
+    con.execute("INSTALL json;")
+    con.execute("LOAD json;")
+    return con
 
 
-ai_forensic_logs = Table(
-    "ai_forensic_logs",
-    metadata,
-    Column("TicketID", String(100), primary_key=True),
-    Column("Timestamp", Date),
-    Column("Ticker", String(50)),
-    Column("LeakType", String(50)),
-    Column("LeakAmount", Numeric),
-    Column("MissingKeyFound", String(200)),
-    Column("SuggestedCategory", String(200)),
-    Column("Reasoning", String(1000)),
-    Column("Status", String(50), default="PENDING"),
-)
+# Persistent write-connection instance
+engine = get_db_connection(read_only=False)
 
 
-# Define the Raw JSONB Vault (Bronze Layer)
-raw_financials = Table(
-    "raw_financials",
-    metadata,
-    Column("DataSource", String(50)),
-    Column("Ticker", String(50), primary_key=True),
-    Column("ReportDate", Date, primary_key=True),
-    Column("StatementType", String(50), primary_key=True),  # e.g., 'IS', 'BS', 'CF'
-    Column("RawData", JSONB),
-)
+def initialize_database():
+    print("[*] Initializing Native DuckDB Schema...")
 
-# Define Tables
-quarterly_income_statement = Table(
-    "quarterly_income_statement",
-    metadata,
-    Column("DataSource", String(50)),
-    Column("Ticker", String(50), primary_key=True),
-    Column("ReportDate", Date, primary_key=True),
-    Column("Currency", String(10)),
-    Column("TotalRevenue", Numeric),
-    Column("CostOfRevenue", Numeric),
-    Column("GrossProfit", Numeric),
-    Column("OperatingExpense", Numeric),
-    Column("OperatingIncome", Numeric),
-    Column("NetInterestIncome", Numeric),
-    Column("TaxProvision", Numeric),
-    Column("NetIncome", Numeric),
-)
+    # 1. Market Metadata
+    engine.execute("""
+        CREATE TABLE IF NOT EXISTS market_metadata (
+            "Ticker" VARCHAR PRIMARY KEY,
+            "IndicatorName" VARCHAR,
+            "TargetTable" VARCHAR NOT NULL,
+            "Sector" VARCHAR,
+            "Industry" VARCHAR,
+            "AssetClass" VARCHAR NOT NULL,
+            "Exchange" VARCHAR,
+            "IsActive" BOOLEAN DEFAULT true,
+            "valid_data_since" DATE,
+            "Description" VARCHAR
+        );
+    """)
 
-yearly_income_statement = Table(
-    "yearly_income_statement",
-    metadata,
-    Column("DataSource", String(50)),
-    Column("Ticker", String(50), primary_key=True),
-    Column("ReportDate", Date, primary_key=True),
-    Column("Currency", String(10)),
-    Column("IsValid", Boolean),
-    Column("TotalRevenue", Numeric),
-    Column("CostOfRevenue", Numeric),
-    Column("GrossProfit", Numeric),
-    Column("OperatingExpense", Numeric),
-    Column("OperatingIncome", Numeric),
-    Column("NetInterestIncome", Numeric),
-    Column("TaxProvision", Numeric),
-    Column("NetIncome", Numeric),
-)
+    # 2. Macro Daily Ledger
+    engine.execute("""
+        CREATE TABLE IF NOT EXISTS macro_daily_ledger (
+            "IndicatorName" VARCHAR,
+            "ReportDate" DATE,
+            "Open" DOUBLE,
+            "High" DOUBLE,
+            "Low" DOUBLE,
+            "Close_Value" DOUBLE NOT NULL,
+            "Volume" BIGINT,
+            PRIMARY KEY ("IndicatorName", "ReportDate")
+        );
+    """)
 
-quarterly_balance_sheet = Table(
-    "quarterly_balance_sheet",
-    metadata,
-    Column("DataSource", String(50)),
-    Column("Ticker", String(50), primary_key=True),
-    Column("ReportDate", Date, primary_key=True),
-    Column("Currency", String(10)),
-    Column("CashCashEquivalentsAndShortTermInvestments", Numeric),
-    Column("Receivables", Numeric),
-    Column("Inventory", Numeric),
-    Column("CurrentAssets", Numeric),
-    Column("TotalNonCurrentAssets", Numeric),
-    Column("GrossPPE", Numeric),
-    Column("AccumulatedDepreciation", Numeric),
-    Column("NetPPE", Numeric),
-    Column("TotalAssets", Numeric),
-    Column("PayablesAndAccruedExpenses", Numeric),
-    Column("CurrentDebtAndCapitalLeaseObligation", Numeric),
-    Column("TotalTaxPayable", Numeric),
-    Column("CurrentLiabilities", Numeric),
-    Column("LongTermDebtAndCapitalLeaseObligation", Numeric),
-    Column("TotalLiabilitiesNetMinorityInterest", Numeric),
-    Column("CapitalStock", Numeric),
-    Column("RetainedEarnings", Numeric),
-    Column("StockholdersEquity", Numeric),
-)
+    # 3. Macro Intraday Ledger
+    engine.execute("""
+        CREATE TABLE IF NOT EXISTS macro_intraday_ledger (
+            "IndicatorName" VARCHAR,
+            "ReportDate" TIMESTAMP,
+            "Timeframe" VARCHAR,
+            "Open" DOUBLE,
+            "High" DOUBLE,
+            "Low" DOUBLE,
+            "Close_Value" DOUBLE NOT NULL,
+            "Volume" BIGINT,
+            PRIMARY KEY ("IndicatorName", "ReportDate", "Timeframe")
+        );
+    """)
 
-yearly_balance_sheet = Table(
-    "yearly_balance_sheet",
-    metadata,
-    Column("DataSource", String(50)),
-    Column("Ticker", String(50), primary_key=True),
-    Column("ReportDate", Date, primary_key=True),
-    Column("Currency", String(10)),
-    Column("IsValid", Boolean),
-    Column("CashCashEquivalentsAndShortTermInvestments", Numeric),
-    Column("Receivables", Numeric),
-    Column("Inventory", Numeric),
-    Column("CurrentAssets", Numeric),
-    Column("TotalNonCurrentAssets", Numeric),
-    Column("GrossPPE", Numeric),
-    Column("AccumulatedDepreciation", Numeric),
-    Column("NetPPE", Numeric),
-    Column("TotalAssets", Numeric),
-    Column("PayablesAndAccruedExpenses", Numeric),
-    Column("CurrentDebtAndCapitalLeaseObligation", Numeric),
-    Column("TotalTaxPayable", Numeric),
-    Column("CurrentLiabilities", Numeric),
-    Column("LongTermDebtAndCapitalLeaseObligation", Numeric),
-    Column("TotalLiabilitiesNetMinorityInterest", Numeric),
-    Column("CapitalStock", Numeric),
-    Column("RetainedEarnings", Numeric),
-    Column("StockholdersEquity", Numeric),
-)
+    # 4. Prediction Ledger
+    engine.execute("""
+        CREATE TABLE IF NOT EXISTS prediction_ledger (
+            "engine_name" VARCHAR,
+            "ticker" VARCHAR,
+            "asof_date" DATE,
+            "horizon" VARCHAR,
+            "signal" VARCHAR,
+            "score" DOUBLE,
+            "confidence" DOUBLE,
+            "veto_flag" BOOLEAN DEFAULT false,
+            "penalty" DOUBLE DEFAULT 0.0,
+            "target_metric" VARCHAR,
+            "reason_json" JSON,
+            "feature_json" JSON,
+            "data_quality_score" DOUBLE,
+            "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY ("engine_name", "ticker", "asof_date", "horizon")
+        );
+    """)
 
-quarterly_cash_flow = Table(
-    "quarterly_cash_flow",
-    metadata,
-    Column("DataSource", String(50)),
-    Column("Ticker", String(50), primary_key=True),
-    Column("ReportDate", Date, primary_key=True),
-    Column("Currency", String(10)),
-    Column("BeginningCashBalance", Numeric),
-    Column("CashReceipts", Numeric),
-    Column("CashDisbursements", Numeric),
-    Column("CashFromOperations", Numeric),
-    Column("FixedAssetPurchases", Numeric),
-    Column("NetBorrowing", Numeric),
-    Column("IncomeTaxPaid", Numeric),
-    Column("SaleOfStock", Numeric),
-    Column("EndingCashBalance", Numeric),
-)
+    # 5. Global Assets Daily
+    engine.execute("""
+        CREATE TABLE IF NOT EXISTS global_assets_daily (
+            "Ticker" VARCHAR,
+            "ReportDate" DATE,
+            "AssetClass" VARCHAR,
+            "Open" DOUBLE,
+            "High" DOUBLE,
+            "Low" DOUBLE,
+            "Close" DOUBLE NOT NULL,
+            "Volume" BIGINT,
+            PRIMARY KEY ("Ticker", "ReportDate")
+        );
+    """)
 
-yearly_cash_flow = Table(
-    "yearly_cash_flow",
-    metadata,
-    Column("DataSource", String(50)),
-    Column("Ticker", String(50), primary_key=True),
-    Column("ReportDate", Date, primary_key=True),
-    Column("Currency", String(10)),
-    Column("IsValid", Boolean),
-    Column("BeginningCashBalance", Numeric),
-    Column("CashReceipts", Numeric),
-    Column("CashDisbursements", Numeric),
-    Column("CashFromOperations", Numeric),
-    Column("FixedAssetPurchases", Numeric),
-    Column("NetBorrowing", Numeric),
-    Column("IncomeTaxPaid", Numeric),
-    Column("SaleOfStock", Numeric),
-    Column("EndingCashBalance", Numeric),
-)
+    # 6. Global Assets Intraday
+    engine.execute("""
+        CREATE TABLE IF NOT EXISTS global_assets_intraday (
+            "Ticker" VARCHAR,
+            "ReportDate" TIMESTAMP,
+            "Timeframe" VARCHAR,
+            "Open" DOUBLE,
+            "High" DOUBLE,
+            "Low" DOUBLE,
+            "Close" DOUBLE NOT NULL,
+            "Volume" BIGINT,
+            PRIMARY KEY ("Ticker", "ReportDate", "Timeframe")
+        );
+    """)
 
-yearly_indirect_cash_flow = Table(
-    "yearly_indirect_cash_flow",
-    metadata,
-    Column("DataSource", String(50)),
-    Column("Ticker", String(50), primary_key=True),
-    Column("ReportDate", Date, primary_key=True),
-    Column("Currency", String(10)),
-    Column("IsValid", Boolean),
-    Column("IsSectionValid", Boolean),
-    Column("IsRollforwardValid", Boolean),
-    Column("TreasuryOpacityRatio", Numeric),
-    Column("NetIncome", Numeric),
-    Column("DepreciationAndAmortization", Numeric),
-    Column("OtherNonCashAdjustments", Numeric),
-    Column("ChangeInAccountsReceivable", Numeric),
-    Column("ChangeInInventory", Numeric),
-    Column("ChangeInAccountsPayable", Numeric),
-    Column("OtherWorkingCapitalChanges", Numeric),
-    Column("IncomeTaxPaid", Numeric),
-    Column("TotalOperatingCashFlow", Numeric),
-    Column("Unmapped_Operating", Numeric),
-    Column("CapExPurchaseOfPPE", Numeric),
-    Column("PurchaseSaleOfInvestments", Numeric),
-    Column("OtherInvestingActivities", Numeric),
-    Column("TotalInvestingCashFlow", Numeric),
-    Column("Unmapped_Investing", Numeric),
-    Column("NetDebtIssuedRepaid", Numeric),
-    Column("NetStockIssuedRepurchased", Numeric),
-    Column("DividendsPaid", Numeric),
-    Column("OtherFinancingActivities", Numeric),
-    Column("TotalFinancingCashFlow", Numeric),
-    Column("Unmapped_Financing", Numeric),
-    Column("EffectOfExchangeRates", Numeric),
-    Column("NetChangeInCash", Numeric),
-    Column("BeginningCash", Numeric),
-    Column("EndingCash", Numeric),
-    Column("Unmapped_Rollforward", Numeric),
-)
+    # 7. Unified Market Master
+    engine.execute("""
+        CREATE TABLE IF NOT EXISTS unified_market_master (
+            "Ticker" VARCHAR,
+            "ReportDate" TIMESTAMP,
+            "InstrumentType" VARCHAR,
+            "ExpiryDate" DATE,
+            "StrikePrice" DOUBLE,
+            "Open" DOUBLE,
+            "High" DOUBLE,
+            "Low" DOUBLE,
+            "Close" DOUBLE,
+            "Volume" BIGINT,
+            "Exchange_Series" VARCHAR,
+            "Turnover" DOUBLE,
+            "No_Of_Trades" BIGINT,
+            "Delivery_Qty" BIGINT,
+            "Delivery_Percentage" DOUBLE,
+            "Short_Volume" BIGINT,
+            "OptionType" VARCHAR,
+            "Open_Interest" BIGINT,
+            "Change_In_OI" BIGINT,
+            "Settlement_Price" DOUBLE,
+            "Underlying_Price" DOUBLE,
+            PRIMARY KEY ("Ticker", "ReportDate", "InstrumentType", "ExpiryDate", "StrikePrice")
+        );
+    """)
 
-# Create all tables
-metadata.create_all(engine)
-print("All tables validated and created successfully.")
+    # 8. Institutional Ledger
+    engine.execute("""
+        CREATE TABLE IF NOT EXISTS institutional_ledger (
+            "ReportDate" TIMESTAMP,
+            "ClientType" VARCHAR,
+            "Cash_Buy_Value" DOUBLE,
+            "Cash_Sell_Value" DOUBLE,
+            "Cash_Net_Value" DOUBLE,
+            "Nifty_Close" DOUBLE,
+            "Future_Index_Long" BIGINT,
+            "Future_Index_Short" BIGINT,
+            "Future_Stock_Long" BIGINT,
+            "Future_Stock_Short" BIGINT,
+            "Option_Index_Call_Long" BIGINT,
+            "Option_Index_Put_Long" BIGINT,
+            "Option_Index_Call_Short" BIGINT,
+            "Option_Index_Put_Short" BIGINT,
+            "Option_Stock_Call_Long" BIGINT,
+            "Option_Stock_Put_Long" BIGINT,
+            "Option_Stock_Call_Short" BIGINT,
+            "Option_Stock_Put_Short" BIGINT,
+            "Total_Long_Contracts" BIGINT,
+            "Total_Short_Contracts" BIGINT,
+            PRIMARY KEY ("ReportDate", "ClientType")
+        );
+    """)
+
+    # 9. Trade Events Ledger
+    # Creates an auto-incrementing sequence for EventID mapping to previous SQLAlchemy autoincrement
+    engine.execute("CREATE SEQUENCE IF NOT EXISTS seq_trade_event_id;")
+    engine.execute("""
+        CREATE TABLE IF NOT EXISTS trade_events_ledger (
+            "EventID" BIGINT DEFAULT nextval('seq_trade_event_id') PRIMARY KEY,
+            "ReportDate" TIMESTAMP NOT NULL,
+            "Ticker" VARCHAR NOT NULL,
+            "EventType" VARCHAR NOT NULL,
+            "SecurityName" VARCHAR,
+            "ClientName" VARCHAR NOT NULL,
+            "TransactionType" VARCHAR NOT NULL,
+            "Quantity" BIGINT NOT NULL,
+            "TradePrice" DOUBLE NOT NULL,
+            "Remarks" VARCHAR,
+            UNIQUE("ReportDate", "Ticker", "ClientName", "TransactionType", "Quantity", "TradePrice")
+        );
+    """)
+
+    # 10. AI Forensic Logs
+    engine.execute("""
+        CREATE TABLE IF NOT EXISTS ai_forensic_logs (
+            "TicketID" VARCHAR PRIMARY KEY,
+            "Timestamp" DATE,
+            "Ticker" VARCHAR,
+            "LeakType" VARCHAR,
+            "LeakAmount" DOUBLE,
+            "MissingKeyFound" VARCHAR,
+            "SuggestedCategory" VARCHAR,
+            "Reasoning" VARCHAR,
+            "Status" VARCHAR DEFAULT 'PENDING'
+        );
+    """)
+
+    # 11. Raw Financials (JSONB -> JSON)
+    engine.execute("""
+        CREATE TABLE IF NOT EXISTS raw_financials (
+            "DataSource" VARCHAR,
+            "Ticker" VARCHAR,
+            "ReportDate" DATE,
+            "StatementType" VARCHAR,
+            "RawData" JSON,
+            PRIMARY KEY ("Ticker", "ReportDate", "StatementType")
+        );
+    """)
+
+    # 12. Quarterly Income Statement
+    engine.execute("""
+        CREATE TABLE IF NOT EXISTS quarterly_income_statement (
+            "DataSource" VARCHAR,
+            "Ticker" VARCHAR,
+            "ReportDate" DATE,
+            "Currency" VARCHAR,
+            "TotalRevenue" DOUBLE,
+            "CostOfRevenue" DOUBLE,
+            "GrossProfit" DOUBLE,
+            "OperatingExpense" DOUBLE,
+            "OperatingIncome" DOUBLE,
+            "NetInterestIncome" DOUBLE,
+            "TaxProvision" DOUBLE,
+            "NetIncome" DOUBLE,
+            PRIMARY KEY ("Ticker", "ReportDate")
+        );
+    """)
+
+    # 13. Yearly Income Statement
+    engine.execute("""
+        CREATE TABLE IF NOT EXISTS yearly_income_statement (
+            "DataSource" VARCHAR,
+            "Ticker" VARCHAR,
+            "ReportDate" DATE,
+            "Currency" VARCHAR,
+            "IsValid" BOOLEAN,
+            "TotalRevenue" DOUBLE,
+            "CostOfRevenue" DOUBLE,
+            "GrossProfit" DOUBLE,
+            "OperatingExpense" DOUBLE,
+            "OperatingIncome" DOUBLE,
+            "NetInterestIncome" DOUBLE,
+            "TaxProvision" DOUBLE,
+            "NetIncome" DOUBLE,
+            PRIMARY KEY ("Ticker", "ReportDate")
+        );
+    """)
+
+    # 14. Quarterly Balance Sheet
+    engine.execute("""
+        CREATE TABLE IF NOT EXISTS quarterly_balance_sheet (
+            "DataSource" VARCHAR,
+            "Ticker" VARCHAR,
+            "ReportDate" DATE,
+            "Currency" VARCHAR,
+            "CashCashEquivalentsAndShortTermInvestments" DOUBLE,
+            "Receivables" DOUBLE,
+            "Inventory" DOUBLE,
+            "CurrentAssets" DOUBLE,
+            "TotalNonCurrentAssets" DOUBLE,
+            "GrossPPE" DOUBLE,
+            "AccumulatedDepreciation" DOUBLE,
+            "NetPPE" DOUBLE,
+            "TotalAssets" DOUBLE,
+            "PayablesAndAccruedExpenses" DOUBLE,
+            "CurrentDebtAndCapitalLeaseObligation" DOUBLE,
+            "TotalTaxPayable" DOUBLE,
+            "CurrentLiabilities" DOUBLE,
+            "LongTermDebtAndCapitalLeaseObligation" DOUBLE,
+            "TotalLiabilitiesNetMinorityInterest" DOUBLE,
+            "CapitalStock" DOUBLE,
+            "RetainedEarnings" DOUBLE,
+            "StockholdersEquity" DOUBLE,
+            PRIMARY KEY ("Ticker", "ReportDate")
+        );
+    """)
+
+    # 15. Yearly Balance Sheet
+    engine.execute("""
+        CREATE TABLE IF NOT EXISTS yearly_balance_sheet (
+            "DataSource" VARCHAR,
+            "Ticker" VARCHAR,
+            "ReportDate" DATE,
+            "Currency" VARCHAR,
+            "IsValid" BOOLEAN,
+            "CashCashEquivalentsAndShortTermInvestments" DOUBLE,
+            "Receivables" DOUBLE,
+            "Inventory" DOUBLE,
+            "CurrentAssets" DOUBLE,
+            "TotalNonCurrentAssets" DOUBLE,
+            "GrossPPE" DOUBLE,
+            "AccumulatedDepreciation" DOUBLE,
+            "NetPPE" DOUBLE,
+            "TotalAssets" DOUBLE,
+            "PayablesAndAccruedExpenses" DOUBLE,
+            "CurrentDebtAndCapitalLeaseObligation" DOUBLE,
+            "TotalTaxPayable" DOUBLE,
+            "CurrentLiabilities" DOUBLE,
+            "LongTermDebtAndCapitalLeaseObligation" DOUBLE,
+            "TotalLiabilitiesNetMinorityInterest" DOUBLE,
+            "CapitalStock" DOUBLE,
+            "RetainedEarnings" DOUBLE,
+            "StockholdersEquity" DOUBLE,
+            PRIMARY KEY ("Ticker", "ReportDate")
+        );
+    """)
+
+    # 16. Quarterly Cash Flow
+    engine.execute("""
+        CREATE TABLE IF NOT EXISTS quarterly_cash_flow (
+            "DataSource" VARCHAR,
+            "Ticker" VARCHAR,
+            "ReportDate" DATE,
+            "Currency" VARCHAR,
+            "BeginningCashBalance" DOUBLE,
+            "CashReceipts" DOUBLE,
+            "CashDisbursements" DOUBLE,
+            "CashFromOperations" DOUBLE,
+            "FixedAssetPurchases" DOUBLE,
+            "NetBorrowing" DOUBLE,
+            "IncomeTaxPaid" DOUBLE,
+            "SaleOfStock" DOUBLE,
+            "EndingCashBalance" DOUBLE,
+            PRIMARY KEY ("Ticker", "ReportDate")
+        );
+    """)
+
+    # 17. Yearly Cash Flow
+    engine.execute("""
+        CREATE TABLE IF NOT EXISTS yearly_cash_flow (
+            "DataSource" VARCHAR,
+            "Ticker" VARCHAR,
+            "ReportDate" DATE,
+            "Currency" VARCHAR,
+            "IsValid" BOOLEAN,
+            "BeginningCashBalance" DOUBLE,
+            "CashReceipts" DOUBLE,
+            "CashDisbursements" DOUBLE,
+            "CashFromOperations" DOUBLE,
+            "FixedAssetPurchases" DOUBLE,
+            "NetBorrowing" DOUBLE,
+            "IncomeTaxPaid" DOUBLE,
+            "SaleOfStock" DOUBLE,
+            "EndingCashBalance" DOUBLE,
+            PRIMARY KEY ("Ticker", "ReportDate")
+        );
+    """)
+
+    # 18. Yearly Indirect Cash Flow
+    engine.execute("""
+        CREATE TABLE IF NOT EXISTS yearly_indirect_cash_flow (
+            "DataSource" VARCHAR,
+            "Ticker" VARCHAR,
+            "ReportDate" DATE,
+            "Currency" VARCHAR,
+            "IsValid" BOOLEAN,
+            "IsSectionValid" BOOLEAN,
+            "IsRollforwardValid" BOOLEAN,
+            "TreasuryOpacityRatio" DOUBLE,
+            "NetIncome" DOUBLE,
+            "DepreciationAndAmortization" DOUBLE,
+            "OtherNonCashAdjustments" DOUBLE,
+            "ChangeInAccountsReceivable" DOUBLE,
+            "ChangeInInventory" DOUBLE,
+            "ChangeInAccountsPayable" DOUBLE,
+            "OtherWorkingCapitalChanges" DOUBLE,
+            "IncomeTaxPaid" DOUBLE,
+            "TotalOperatingCashFlow" DOUBLE,
+            "Unmapped_Operating" DOUBLE,
+            "CapExPurchaseOfPPE" DOUBLE,
+            "PurchaseSaleOfInvestments" DOUBLE,
+            "OtherInvestingActivities" DOUBLE,
+            "TotalInvestingCashFlow" DOUBLE,
+            "Unmapped_Investing" DOUBLE,
+            "NetDebtIssuedRepaid" DOUBLE,
+            "NetStockIssuedRepurchased" DOUBLE,
+            "DividendsPaid" DOUBLE,
+            "OtherFinancingActivities" DOUBLE,
+            "TotalFinancingCashFlow" DOUBLE,
+            "Unmapped_Financing" DOUBLE,
+            "EffectOfExchangeRates" DOUBLE,
+            "NetChangeInCash" DOUBLE,
+            "BeginningCash" DOUBLE,
+            "EndingCash" DOUBLE,
+            "Unmapped_Rollforward" DOUBLE,
+            PRIMARY KEY ("Ticker", "ReportDate")
+        );
+    """)
+
+    print("[+] All tables validated and created successfully.")
+
+
+# Automatically run on script import to ensure database readiness
+initialize_database()
+
+
+def text(query_string):
+    return query_string
