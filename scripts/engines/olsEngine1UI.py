@@ -2,41 +2,35 @@ import streamlit as st
 import pandas as pd
 import json
 from datetime import datetime
-from sqlalchemy import text
 from scripts.database import engine
 
 
 def fetch_single_ticker_ledger(ticker: str, target_date: str) -> pd.DataFrame:
-    query = text("""
+    query = """
         SELECT horizon, signal, score, confidence, veto_flag, penalty, reason_json, feature_json
         FROM prediction_ledger
-        WHERE ticker = :ticker AND asof_date = :target_date AND engine_name = '1_OLS_Microstructure'
-    """)
-    with engine.connect() as conn:
-        return engine.execute(
-            query, conn, params={"ticker": ticker, "target_date": target_date}
-        ).df()
+        WHERE ticker = $ticker AND asof_date = CAST($target_date AS DATE) AND engine_name = '1_OLS_Microstructure'
+    """
+    return engine.execute(query, {"ticker": ticker, "target_date": target_date}).df()
 
 
 def fetch_watchlist_ledger(target_date: str) -> pd.DataFrame:
-    query = text("""
+    query = """
         SELECT ticker, horizon, signal, score, confidence, veto_flag, penalty
         FROM prediction_ledger
-        WHERE asof_date = :target_date AND engine_name = '1_OLS_Microstructure'
-    """)
-    with engine.connect() as conn:
-        return engine.execute(query, conn, params={"target_date": target_date}).df()
+        WHERE asof_date = CAST($target_date AS DATE) AND engine_name = '1_OLS_Microstructure'
+    """
+    return engine.execute(query, {"target_date": target_date}).df()
 
 
 def fetch_historical_accuracy(ticker: str) -> dict:
     """Queries Phase 3 validation ledger to extract aggregate realized accuracy metrics."""
-    query = text("""
+    query = """
         SELECT is_directional_hit, variance_error
         FROM validation_ledger
-        WHERE ticker = :ticker AND engine_name = '1_OLS_Microstructure'
-    """)
-    with engine.connect() as conn:
-        df = engine.execute(query, conn, params={"ticker": ticker}).df()
+        WHERE ticker = $ticker AND engine_name = '1_OLS_Microstructure'
+    """
+    df = engine.execute(query, {"ticker": ticker}).df()
 
     if df.empty:
         return {"hit_rate": "N/A", "avg_error": "N/A", "total_audits": 0}
@@ -56,23 +50,21 @@ def fetch_trend_matrix(
     ticker: str, target_date: str, days_lookback: int = 30
 ) -> pd.DataFrame:
     """Fetches and aligns price, volume, and delivery streams into an unjumbled time-series."""
-    query = text("""
+    query = """
         SELECT date, close, volume, delivery_percentage
         FROM unified_market_matrix
-        WHERE ticker = :ticker AND date <= :target_date
+        WHERE ticker = $ticker AND date <= CAST($target_date AS DATE)
         ORDER BY date DESC
-        LIMIT :limit
-    """)
-    with engine.connect() as conn:
-        df = engine.execute(
-            query,
-            conn,
-            params={
-                "ticker": ticker,
-                "target_date": target_date,
-                "limit": days_lookback,
-            },
-        ).df()
+        LIMIT $limit
+    """
+    df = engine.execute(
+        query,
+        {
+            "ticker": ticker,
+            "target_date": target_date,
+            "limit": days_lookback,
+        },
+    ).df()
     if not df.empty:
         df = df.sort_values(by="date")
         df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
@@ -91,23 +83,21 @@ def render_prediction_trajectory_chart(
     target_days = horizon_days_map.get(horizon_label, 5)
 
     # Fetch the actual price path from the prediction date forward + a few buffer days to see the result
-    query = text("""
+    query = """
         SELECT date, close
         FROM unified_market_matrix
-        WHERE ticker = :ticker AND date >= :start_date
+        WHERE ticker = $ticker AND date >= CAST($start_date AS DATE)
         ORDER BY date ASC
-        LIMIT :limit
-    """)
-    with engine.connect() as conn:
-        actual_df = engine.execute(
-            query,
-            conn,
-            params={
-                "ticker": ticker,
-                "start_date": prediction_date,
-                "limit": target_days + 3,
-            },
-        ).df()
+        LIMIT $limit
+    """
+    actual_df = engine.execute(
+        query,
+        {
+            "ticker": ticker,
+            "start_date": prediction_date,
+            "limit": target_days + 3,
+        },
+    ).df()
 
     if actual_df.empty or len(actual_df) < 2:
         st.caption(f"Waiting for market data to validate {prediction_date} signal...")

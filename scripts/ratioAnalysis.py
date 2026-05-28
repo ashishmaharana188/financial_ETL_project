@@ -16,7 +16,7 @@ def fetch_ccc(ticker: str, data_source: str) -> pd.DataFrame:
                 b."Receivables", b."Inventory", b."PayablesAndAccruedExpenses"
             FROM yearly_income_statement i
             JOIN yearly_balance_sheet b ON i."Ticker" = b."Ticker" AND i."ReportDate" = b."ReportDate" AND i."DataSource" = b."DataSource"
-            WHERE i."Ticker" = :ticker AND i."DataSource" = :data_source
+            WHERE i."Ticker" = $ticker AND i."DataSource" = $data_source
         )
         SELECT 
             "Ticker", "ReportDate",
@@ -50,7 +50,7 @@ def fetch_debt_to_equity(ticker: str, data_source: str) -> pd.DataFrame:
                  WHEN ((COALESCE("CurrentDebtAndCapitalLeaseObligation", 0) + COALESCE("LongTermDebtAndCapitalLeaseObligation", 0)) / "StockholdersEquity") < 2.0 THEN TRUE 
                  ELSE FALSE END AS swarm_pass_leverage
         FROM yearly_balance_sheet
-        WHERE "Ticker" = :ticker AND "DataSource" = :data_source
+        WHERE "Ticker" = $ticker AND "DataSource" = $data_source
           
         ORDER BY "ReportDate" DESC;
     """)
@@ -69,7 +69,7 @@ def fetch_roic(ticker: str, data_source: str) -> pd.DataFrame:
                 COALESCE(b."CashCashEquivalentsAndShortTermInvestments", 0) AS cash
             FROM yearly_income_statement i
             JOIN yearly_balance_sheet b ON i."Ticker" = b."Ticker" AND i."ReportDate" = b."ReportDate" AND i."DataSource" = b."DataSource"
-            WHERE i."Ticker" = :ticker AND i."DataSource" = :data_source
+            WHERE i."Ticker" = $ticker AND i."DataSource" = $data_source
         )
         SELECT 
             "Ticker", "ReportDate",
@@ -96,7 +96,7 @@ def fetch_fcf_yield(ticker: str, data_source: str) -> pd.DataFrame:
             ("TotalOperatingCashFlow" - ABS(COALESCE("CapExPurchaseOfPPE", 0))) AS free_cash_flow,
             CASE WHEN ("TotalOperatingCashFlow" - ABS(COALESCE("CapExPurchaseOfPPE", 0))) > 0 THEN TRUE ELSE FALSE END AS swarm_pass_positive_fcf
         FROM yearly_indirect_cash_flow
-        WHERE "Ticker" = :ticker AND "DataSource" = :data_source
+        WHERE "Ticker" = $ticker AND "DataSource" = $data_source
           
         ORDER BY "ReportDate" DESC;
     """)
@@ -165,7 +165,7 @@ def fetch_dol(ticker: str, data_source: str) -> pd.DataFrame:
                 "OperatingIncome",
                 LAG("OperatingIncome") OVER (PARTITION BY "Ticker" ORDER BY "ReportDate" ASC) AS prev_operating_income
             FROM yearly_income_statement
-            WHERE "Ticker" = :ticker AND "DataSource" = :data_source
+            WHERE "Ticker" = $ticker AND "DataSource" = $data_source
         ),
         pct_changes AS (
             SELECT 
@@ -201,7 +201,7 @@ def fetch_cfo_to_pat(ticker: str, data_source: str) -> pd.DataFrame:
             FROM quarterly_income_statement i
             JOIN yearly_indirect_cash_flow c 
             ON i."Ticker" = c."Ticker" AND i."ReportDate" = c."ReportDate" AND i."DataSource" = c."DataSource"
-            WHERE i."Ticker" = :ticker AND i."DataSource" = :data_source
+            WHERE i."Ticker" = $ticker AND i."DataSource" = $data_source
         )
         SELECT 
             "Ticker", "ReportDate",
@@ -232,7 +232,7 @@ def fetch_operating_margin(ticker: str, data_source: str) -> pd.DataFrame:
             CASE WHEN "TotalRevenue" = 0 OR "TotalRevenue" IS NULL THEN FALSE 
                  WHEN "OperatingIncome" > 0 THEN TRUE ELSE FALSE END AS swarm_pass_operating_margin
         FROM quarterly_income_statement
-        WHERE "Ticker" = :ticker AND "DataSource" = :data_source
+        WHERE "Ticker" = $ticker AND "DataSource" =$data_source
           
         ORDER BY "ReportDate" DESC;
     """)
@@ -250,7 +250,7 @@ def fetch_gross_margin(ticker: str, data_source: str) -> pd.DataFrame:
             CASE WHEN "TotalRevenue" = 0 OR "TotalRevenue" IS NULL THEN FALSE 
                  WHEN "GrossProfit" > 0 THEN TRUE ELSE FALSE END AS swarm_pass_gross_margin
         FROM quarterly_income_statement
-        WHERE "Ticker" = :ticker AND "DataSource" = :data_source
+        WHERE "Ticker" = $ticker AND "DataSource" = $data_source
           
         ORDER BY "ReportDate" DESC;
     """)
@@ -271,7 +271,7 @@ def fetch_interest_coverage(ticker: str, data_source: str) -> pd.DataFrame:
                 ELSE ABS("OperatingIncome" / "NetInterestIncome")
             END AS interest_coverage
         FROM {table_name}
-        WHERE "Ticker" = :ticker
+        WHERE "Ticker" = $ticker
         ORDER BY "ReportDate" ASC;
     """)
 
@@ -300,7 +300,7 @@ def fetch_asset_turnover(ticker: str, data_source: str) -> pd.DataFrame:
             FROM yearly_income_statement i
             JOIN yearly_balance_sheet b 
             ON i."Ticker" = b."Ticker" AND i."ReportDate" = b."ReportDate" AND i."DataSource" = b."DataSource"
-            WHERE i."Ticker" = :ticker AND i."DataSource" = :data_source
+            WHERE i."Ticker" = $ticker AND i."DataSource" = $data_source
         )
         SELECT 
             "Ticker", "ReportDate",
@@ -356,7 +356,7 @@ def fetch_fcf_margin(ticker: str, data_source: str) -> pd.DataFrame:
         FROM {table_name_inc} i
         JOIN {table_name_cf} c 
           ON i."Ticker" = c."Ticker" AND i."ReportDate" = c."ReportDate"
-        WHERE i."Ticker" = :ticker
+        WHERE i."Ticker" = $ticker
         ORDER BY i."ReportDate" ASC;
     """)
 
@@ -474,7 +474,7 @@ def fetch_beneish_m_score(ticker: str, engine) -> pd.DataFrame:
                 ON i."Ticker" = b."Ticker" AND i."ReportDate" = b."ReportDate"
             JOIN yearly_indirect_cash_flow c 
                 ON i."Ticker" = c."Ticker" AND i."ReportDate" = c."ReportDate"
-            WHERE i."Ticker" = :ticker
+            WHERE i."Ticker" = $ticker
               AND c."IsSectionValid" = TRUE  -- THE LEAK FILTER
         ),
         LaggedData AS (

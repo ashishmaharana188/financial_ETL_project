@@ -3,9 +3,7 @@ import numpy as np
 import statsmodels.api as sm
 import json
 from datetime import datetime
-from sqlalchemy import insert, text
-from scripts.database import engine, prediction_ledger
-from sqlalchemy.dialects.postgresql import insert
+from scripts.database import engine
 
 
 class OLSMicrostructureEngine:
@@ -17,17 +15,16 @@ class OLSMicrostructureEngine:
         Fetches historical daily matrix containing price, volume, and lagged bulk metrics
         (delivery, open interest, options PCR, futures basis) up to the asof_date.
         """
-        query = text("""
+        # Native DuckDB syntax using positional parameter binding
+        query = """
             SELECT date, close, volume, delivery_percentage, oi_pcr, futures_basis
             FROM unified_market_matrix
-            WHERE ticker = :ticker AND date <= :asof_date
+            WHERE ticker = $ticker AND date <= CAST($asof_date AS DATE)
             ORDER BY date ASC
             LIMIT 500
-        """)
-        with engine.connect() as conn:
-            df = engine.execute(
-                query, conn, params={"ticker": ticker, "asof_date": asof_date}
-            )
+        """
+        # Zero-copy Arrow extraction directly into Pandas
+        df = engine.execute(query, {"ticker": ticker, "asof_date": asof_date}).df()
 
         numeric_cols = [
             "close",
@@ -43,279 +40,246 @@ class OLSMicrostructureEngine:
         if not df.empty:
             df["date"] = pd.to_datetime(df["date"])
             df.set_index("date", inplace=True)
-            df["pcr_change"] = df["oi_pcr"].diff()
-            df["vol_change"] = df["volume"].pct_change()
+            df.sort_index(inplace=True)
+
         return df
 
-    def fetch_live_intraday_energy(self, ticker: str, asof_date: str) -> float:
-        query = text("""
+    def calculate_institutional_footprint(self, ticker: str, asof_date: str) -> float:
+        """
+        Estimates macro-level FII/DII involvement on the date of execution.
+        """
+        query = """
             SELECT "ReportDate", "Volume"
-            FROM global_assets_intraday
-            WHERE "Ticker" = :ticker AND DATE("ReportDate") = :asof_date
-            ORDER BY "ReportDate" ASC
-        """)
-        with engine.connect() as conn:
-            df = engine.execute(
-                query, conn, params={"ticker": ticker, "asof_date": asof_date}
-            ).df()
+            FROM macro_daily_ledger
+            WHERE "IndicatorName" = 'FII_DII_Net' AND "ReportDate" <= CAST($asof_date AS DATE)
+            ORDER BY "ReportDate" DESC
+            LIMIT 10
+        """
+        df = engine.execute(query, {"asof_date": asof_date}).df()
 
-        # Holiday/Non-trading day mitigation check
-        if df.empty or len(df) < 5:
-            return (
-                -1.0
-            )  # Sentinel value signaling an inactive or unrecorded trading day
-
-        volumes = df["Volume"].dropna().values
-        if len(volumes) == 0 or np.std(volumes) == 0:
+        if df.empty:
             return 0.0
 
-        consistency_index = float(np.mean(volumes) / np.std(volumes))
-        return round(consistency_index, 4)
+        df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce").fillna(0)
+        return float(df["Volume"].mean())
 
-    def calculate_macro_regime(self, asof_date: str) -> dict:
+    def fetch_macro_regime(self, asof_date: str) -> dict:
         """
-        Engine 1.5 Core Logic: Queries the macro daily ledger to calculate rolling
-        Z-scores for global volatility index anchors (VIX) and domestic market breadth
-        to evaluate systemic macro health boundaries.
+        Identifies broader market conditions on the target execution date.
         """
-        # 1. Fetch rolling historical baseline for Volatility tracking (252 session window)
-        vix_query = text("""
+        vix_query = """
             SELECT "ReportDate", "Close_Value"
             FROM macro_daily_ledger
-            WHERE "IndicatorName" IN ('US_VIX', 'India_VIX') AND "ReportDate" <= :asof_date
-            ORDER BY "ReportDate" DESC
-            LIMIT 252
-        """)
-
-        # 2. Fetch market breadth components for the current point-in-time snapshot
-        breadth_query = text("""
+            WHERE "IndicatorName" = 'INDIAVIX' AND "ReportDate" <= CAST($asof_date AS DATE)
+            ORDER BY "ReportDate" DESC LIMIT 252
+        """
+        breadth_query = """
             SELECT "Ticker", "Close", "Open"
             FROM global_assets_daily
-            WHERE "ReportDate" = :asof_date
-        """)
+            WHERE "ReportDate" = CAST($asof_date AS DATE) AND "AssetClass" = 'Equity'
+        """
+        vix_df = engine.execute(vix_query, {"asof_date": asof_date}).df()
+        breadth_df = engine.execute(breadth_query, {"asof_date": asof_date}).df()
 
-        with engine.connect() as conn:
-            vix_df = engine.execute(
-                vix_query, conn, params={"asof_date": asof_date}
-            ).df()
-            breadth_df = engine.execute(
-                breadth_query, conn, params={"asof_date": asof_date}
-            ).df()
+        regime = {"vix_percentile": 0.5, "advances_declines_ratio": 1.0}
 
-        # Default fallback conditions if staging tables lack depth
-        regime = "Neutral"
-        vix_z = 0.0
-        breadth_ratio = 0.5
-
-        if not vix_df.empty and len(vix_df) > 30:
-            latest_vix = vix_df["Close_Value"].iloc[0]
-            historical_vix = vix_df["Close_Value"].values
-            vix_mean = np.mean(historical_vix)
-            vix_std = np.std(historical_vix)
-            if vix_std > 0:
-                vix_z = float((latest_vix - vix_mean) / vix_std)
+        if not vix_df.empty:
+            current_vix = vix_df.iloc[0]["Close_Value"]
+            vix_percentile = (vix_df["Close_Value"] < current_vix).mean()
+            regime["vix_percentile"] = float(vix_percentile)
 
         if not breadth_df.empty:
-            advancers = len(breadth_df[breadth_df["Close"] > breadth_df["Open"]])
-            total_active = len(breadth_df)
-            if total_active > 0:
-                breadth_ratio = float(advancers / total_active)
+            advances = (breadth_df["Close"] > breadth_df["Open"]).sum()
+            declines = (breadth_df["Close"] < breadth_df["Open"]).sum()
+            if declines > 0:
+                regime["advances_declines_ratio"] = float(advances / declines)
 
-        # Operational decision matrix for classification boundaries
-        if vix_z > 1.2 or breadth_ratio < 0.35:
-            regime = "Risk-Off"
-        elif vix_z < -1.0 and breadth_ratio > 0.65:
-            regime = "Risk-On"
+        return regime
 
-        return {
-            "regime": regime,
-            "vix_z_score": round(vix_z, 4),
-            "market_breadth_ratio": round(breadth_ratio, 4),
-        }
-
-    def fit_and_predict(
-        self,
-        df: pd.DataFrame,
-        intraday_energy: float,
-        macro_state: dict,
-        horizon_days: int,
-    ) -> dict:
+    def train_and_score(self, df: pd.DataFrame) -> dict:
         """
-        Fits an OLS model using microstructure variables and intraday cash energy,
-        then subjects conviction output scores to Engine 1.5 global modifier rules.
+        Builds the localized regression model.
         """
-        df_clean = df.dropna().copy()
-        if len(df_clean) < 30:
+        if len(df) < 50:
             return None
 
-        df_clean[f"fwd_return_{horizon_days}d"] = (
-            df_clean["close"].shift(-horizon_days) / df_clean["close"] - 1
-        )
+        # 1. Feature Engineering
+        df["log_ret"] = np.log(df["close"] / df["close"].shift(1))
+        df["target_2d"] = df["close"].shift(-2) / df["close"] - 1
+        df["target_5d"] = df["close"].shift(-5) / df["close"] - 1
 
-        features = ["delivery_percentage", "pcr_change", "vol_change", "futures_basis"]
-        train_df = df_clean.dropna(subset=[f"fwd_return_{horizon_days}d"] + features)
+        df["vol_ratio"] = df["volume"] / df["volume"].rolling(20).mean()
+        df["del_ma"] = df["delivery_percentage"].rolling(10).mean()
+        df["del_spike"] = df["delivery_percentage"] / df["del_ma"]
 
-        if len(train_df) < 30:
+        df["pcr_change"] = df["oi_pcr"].diff(3)
+        df["basis_trend"] = df["futures_basis"].rolling(5).mean()
+
+        df.dropna(inplace=True)
+        if len(df) < 40:
             return None
 
-        X = sm.add_constant(train_df[features])
-        y = train_df[f"fwd_return_{horizon_days}d"]
+        # Extract features for the most recent day (T=0)
+        current_features = df.iloc[-1].to_dict()
 
-        model = sm.OLS(y, X).fit()
+        # 2. OLS Modeling targeting T+2
+        features = ["log_ret", "vol_ratio", "del_spike", "pcr_change", "basis_trend"]
+        X = df[features]
+        X = sm.add_constant(X)
+        y = df["target_2d"]
 
-        current_features = df_clean[features].iloc[-1].to_dict()
-        current_features["intraday_volume_consistency"] = intraday_energy
-        current_features["macro_vix_z"] = macro_state["vix_z_score"]
-        current_features["market_breadth"] = macro_state["market_breadth_ratio"]
+        try:
+            model = sm.OLS(y, X).fit()
+            X_latest = pd.DataFrame([df.iloc[-1][features]])
+            X_latest = sm.add_constant(X_latest, has_constant="add")
 
-        X_pred = [1.0] + [df_clean[f].iloc[-1] for f in features]
-        expected_return = float(model.predict(X_pred)[0])
+            # Ensure constant aligns with model params
+            missing_cols = set(model.params.index) - set(X_latest.columns)
+            for col in missing_cols:
+                X_latest[col] = 1.0
 
-        # Interdependency calculations: Scale confidence using microstructure fit, adjust for macro context
-        base_confidence = min(max(float(model.rsquared * 2.5), 0.1), 0.95)
-        confidence_modifier = 0.0
-        veto_flag = False
-        penalty = 0.0
+            predicted_return_2d = float(model.predict(X_latest.iloc[0])[0])
+            r_squared = float(model.rsquared)
 
-        reasoning = {
-            "top_positive_driver": str(
-                model.tvalues.idxmax() if model.tvalues.max() > 0 else "None"
-            ),
-            "top_negative_driver": str(
-                model.tvalues.idxmin() if model.tvalues.min() < 0 else "None"
-            ),
-            "model_r_squared": round(float(model.rsquared), 4),
-            "intraday_signal_status": (
-                "ALGO_ACCUMULATION" if intraday_energy > 1.5 else "RETAIL_NOISE"
-            ),
-            "systemic_regime_context": macro_state["regime"],
-        }
+            # Map mathematical return to normalized [-1, 1] score
+            score = max(min(predicted_return_2d / 0.05, 1.0), -1.0)
+            confidence = r_squared
 
-        # Engine 1.5 Interdependency Interconnection Rule Application
-        if macro_state["regime"] == "Risk-Off":
-            penalty = 0.25
-            confidence_modifier = -0.20
-            reasoning["macro_modifier_note"] = (
-                "Macro Veto Applied: High Global Volatility or Toxic Market Breadth Detected"
-            )
-            if expected_return > 0.015:
-                veto_flag = True  # Flag structural macro contradiction
-        elif macro_state["regime"] == "Risk-On":
-            confidence_modifier = 0.10
-            reasoning["macro_modifier_note"] = (
-                "Macro Tailwind Applied: Tailwinds Confirmed via Systemic Risk-On Conditions"
-            )
+            return {
+                "score": score,
+                "confidence": confidence,
+                "expected_return": predicted_return_2d,
+                "latest_features": current_features,
+            }
+        except Exception:
+            return None
 
-        final_confidence = min(max(base_confidence + confidence_modifier, 0.05), 0.95)
-
-        return {
-            "expected_return": expected_return,
-            "confidence": final_confidence,
-            "penalty": penalty,
-            "veto_flag": veto_flag,
-            "features": current_features,
-            "reasoning": reasoning,
-        }
-
-    def generate_signal(
-        self,
-        expected_return: float,
-        confidence: float,
-        intraday_energy: float,
-        veto_flag: bool,
-    ) -> str:
-        """Applies final signal classification boundaries, checking macro veto exceptions."""
-        if veto_flag:
-            return "WATCH"  # Force downgrade away from aggressive BUY triggers during systematic crises
-
-        if expected_return > 0.015 and confidence > 0.35 and intraday_energy > 1.2:
-            return "BUY"
-        elif expected_return < -0.015 and confidence > 0.35:
-            return "SHORT-BIAS"
-        elif expected_return > 0.0:
-            return "WATCH"
-        else:
-            return "AVOID"
-
-    def execute_pipeline(self, ticker: str, asof_date: str):
+    def execute_pipeline(self, ticker: str, asof_date: str = None):
         """
-        Main runner executing the intertwined pipeline: Extracts metrics, triggers
-        the internal Engine 1.5 tracker modifier context, and writes output rows
-        simultaneously to the shared ledger database contract.
+        Main orchestrator.
         """
-        df_hist = self.fetch_historical_matrix(ticker, asof_date)
-        if df_hist.empty:
-            print(f"[ERROR] Microstructure base history empty for {ticker}")
+        if not asof_date:
+            asof_date = datetime.now().strftime("%Y-%m-%d")
+
+        df = self.fetch_historical_matrix(ticker, asof_date)
+        if df is None or df.empty:
             return
 
-        intraday_energy = self.fetch_live_intraday_energy(ticker, asof_date)
-        macro_state = self.calculate_macro_regime(asof_date)
-        horizons = {"2D": 2, "5D": 5, "20D": 20}
+        model_results = self.train_and_score(df)
+        if not model_results:
+            return
 
-        with engine.begin() as conn:
-            for h_label, h_days in horizons.items():
-                prediction = self.fit_and_predict(
-                    df_hist, intraday_energy, macro_state, h_days
-                )
+        inst_flow = self.calculate_institutional_footprint(ticker, asof_date)
+        macro_regime = self.fetch_macro_regime(asof_date)
 
-                if prediction:
-                    signal = self.generate_signal(
-                        prediction["expected_return"],
-                        prediction["confidence"],
-                        intraday_energy,
-                        prediction["veto_flag"],
-                    )
+        # Merge isolated and macro features for JSON logging
+        final_features = model_results["latest_features"]
+        final_features["institutional_flow"] = inst_flow
+        final_features["vix_percentile"] = macro_regime["vix_percentile"]
 
-                    payload = {
-                        "engine_name": self.engine_name,
-                        "ticker": ticker,
-                        "asof_date": datetime.strptime(asof_date, "%Y-%m-%d").date(),
-                        "horizon": h_label,
-                        "signal": signal,
-                        "score": prediction["expected_return"],
-                        "confidence": prediction["confidence"],
-                        "veto_flag": prediction["veto_flag"],
-                        "penalty": prediction["penalty"],
-                        "target_metric": f"{h_label} Return Horizon",
-                        "reason_json": prediction["reasoning"],
-                        "feature_json": prediction["features"],
-                        "data_quality_score": 1.0 if len(df_hist) > 100 else 0.6,
-                    }
+        # Veto & Penalty System
+        veto = False
+        penalty = 0.0
+        reasons = []
 
-                    stmt = insert(prediction_ledger).values(**payload)
-                    stmt = stmt.on_conflict_do_update(
-                        index_elements=[
-                            "engine_name",
-                            "ticker",
-                            "asof_date",
-                            "horizon",
-                        ],
-                        set_=payload,
-                    )
-                    conn.execute(stmt)
-                    print(
-                        f"[SUCCESS] Intertwined Payload Committed: {ticker} | {h_label} | Signal: {signal} | Regime: {macro_state['regime']}"
-                    )
+        if macro_regime["vix_percentile"] > 0.85:
+            penalty -= 0.2
+            reasons.append("Extreme Market Volatility (VIX > 85th Percentile)")
+
+        if final_features["pcr_change"] < -0.2:
+            penalty -= 0.3
+            reasons.append("Aggressive Put unwinding / Call writing detected")
+
+        if final_features["del_spike"] < 0.5:
+            penalty -= 0.1
+            reasons.append("Severely low delivery footprint vs historical average")
+
+        final_score = model_results["score"] + penalty
+
+        # Discretize the signal based on adjusted scores
+        signal = "WATCH"
+        if final_score > 0.4:
+            signal = "BUY"
+        elif final_score < -0.4:
+            signal = "SHORT-BIAS"
+            veto = True
+            reasons.append("Systemic VETO: Short-Bias override.")
+        elif -0.4 <= final_score <= 0.1:
+            signal = "AVOID"
+
+        # Horizon Map Output
+        predictions = [
+            {
+                "horizon": "2D",
+                "signal": signal,
+                "score": final_score,
+                "confidence": model_results["confidence"],
+                "expected_return": model_results["expected_return"],
+                "veto": veto,
+                "penalty": penalty,
+                "reasons": reasons,
+            }
+        ]
+
+        self.store_predictions(ticker, asof_date, predictions, final_features)
+
+    def store_predictions(
+        self, ticker: str, asof_date: str, predictions: list, feature_json: dict
+    ):
+        """
+        Native DuckDB Upsert logging the model's output and explicit internal state.
+        """
+        for pred in predictions:
+            engine.execute(
+                """
+                INSERT INTO prediction_ledger 
+                ("engine_name", "ticker", "asof_date", "horizon", "signal", "score", 
+                 "confidence", "veto_flag", "penalty", "target_metric", "reason_json", "feature_json")
+                VALUES ($1, $2, CAST($3 AS DATE), $4, $5, $6, $7, CAST($8 AS BOOLEAN), $9, $10, CAST($11 AS JSON), CAST($12 AS JSON))
+                ON CONFLICT ("engine_name", "ticker", "asof_date", "horizon")
+                DO UPDATE SET
+                    "signal" = EXCLUDED."signal",
+                    "score" = EXCLUDED."score",
+                    "confidence" = EXCLUDED."confidence",
+                    "veto_flag" = EXCLUDED."veto_flag",
+                    "penalty" = EXCLUDED."penalty",
+                    "target_metric" = EXCLUDED."target_metric",
+                    "reason_json" = EXCLUDED."reason_json",
+                    "feature_json" = EXCLUDED."feature_json";
+            """,
+                [
+                    self.engine_name,
+                    ticker,
+                    asof_date,
+                    pred["horizon"],
+                    pred["signal"],
+                    pred["score"],
+                    pred["confidence"],
+                    pred["veto"],
+                    pred["penalty"],
+                    json.dumps({"expected_return": pred["expected_return"]}),
+                    json.dumps(pred["reasons"]),
+                    json.dumps(feature_json),
+                ],
+            )
 
 
 def run_mass_historical_backfill(days_depth=60):
     """
-    Automated Batch Wrapper: Dynamically sweeps all active market tickers
-    across the maximum available historical timeline to seed the prediction ledger.
+    Used only once during setup to populate the prediction_ledger backward in time
+    so the dashboard has a historical timeline to map against realized returns.
     """
-    from scripts.database import engine
-    from sqlalchemy import text
-
-    # 1. Fetch all active stock tickers from metadata
-    ticker_query = text('SELECT "Ticker" FROM market_metadata WHERE "IsActive" = true')
-    with engine.connect() as conn:
-        tickers = [row[0] for row in conn.execute(ticker_query).fetchall()]
+    # 1. Fetch active targets directly via DuckDB
+    tickers_df = engine.execute(
+        'SELECT "Ticker" FROM market_metadata WHERE "IsActive" = true'
+    ).df()
+    tickers = tickers_df["Ticker"].tolist()
 
     if not tickers:
         print("[ERROR] No active tickers discovered in market_metadata.")
         return
 
-    # 2. Generate date array moving backward from today up to the maximum data depth
+    # 2. Generate date array moving backward from today
     today = datetime.now()
     date_list = [
         (today - pd.Timedelta(days=i)).strftime("%Y-%m-%d")
@@ -328,14 +292,12 @@ def run_mass_historical_backfill(days_depth=60):
 
     pipeline = OLSMicrostructureEngine()
 
-    # 3. Double-loop timeline traversal (Optimized to execute atomically per stock/date junction)
     for target_date in date_list:
-        # Skip weekends (NSE/BSE non-trading days)
         day_of_week = datetime.strptime(target_date, "%Y-%m-%d").weekday()
-        if day_of_week >= 5:
+        if day_of_week >= 5:  # Skip weekends
             continue
 
-        print(f"\n--- Processing Timeline Snapshot: {target_date} ---")
+        print(f"\\n--- Processing Timeline Snapshot: {target_date} ---")
         for ticker in tickers:
             try:
                 pipeline.execute_pipeline(ticker=ticker, asof_date=target_date)
@@ -344,10 +306,4 @@ def run_mass_historical_backfill(days_depth=60):
 
 
 if __name__ == "__main__":
-
     run_mass_historical_backfill(days_depth=60)
-
-
-if __name__ == "__main__":
-    engine_instance = OLSMicrostructureEngine()
-    engine_instance.execute_pipeline(ticker="RELIANCE.NS", asof_date="2026-05-22")
