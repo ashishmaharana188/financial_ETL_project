@@ -7,7 +7,7 @@ from scripts.macroScrape import register_discovered_tickers
 import subprocess
 import sys
 from datetime import datetime, timedelta
-
+import duckdb
 from scripts.engines.companyMetrics import render_company_metrics
 from scripts.engines.olsEngine1UI import render_ols_engine_ui
 

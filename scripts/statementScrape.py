@@ -11,15 +11,18 @@ import urllib3
 import yfinance as yf
 from bs4 import BeautifulSoup
 from sqlalchemy.dialects.postgresql import insert
-from scripts.ai_agent import trigger_semantic_router
-from scripts.reconciliation import extract_mapped_keys, execute_three_way_match
-from scripts.ai_agent import trigger_semantic_router
+
+# from scripts.ai_agent import trigger_semantic_router
+# from scripts.reconciliation import extract_mapped_keys, execute_three_way_match
+# from scripts.ai_agent import trigger_semantic_router
 from scripts.database import engine
-from scripts.reconciliation import extract_mapped_keys, execute_three_way_match
+
+# from scripts.reconciliation import extract_mapped_keys, execute_three_way_match
 from sqlalchemy import text
-from scripts.modelRuntime import runtime
-from scripts.vectorize import get_top_buckets
-from scripts.reasoning import analyze_key_with_phi3
+
+# from scripts.modelRuntime import runtime
+# from scripts.vectorize import get_top_buckets
+# from scripts.reasoning import analyze_key_with_phi3
 import streamlit as st
 from datetime import datetime
 from scripts.edgarUtils import backfill_structural_breaks
@@ -2396,7 +2399,8 @@ def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
             time.sleep(12)
 
     finally:
-        runtime.purge_memory()
+        print(f"purging")
+        # runtime.purge_memory()
 
         print("\n" + "=" * 40)
         print("BATCH PROCESSING COMPLETE")

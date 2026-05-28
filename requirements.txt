@@ -1,5 +1,8 @@
 pandas
+duckdb
+polaris
 numpy
+tvDatafeed
 yfinance
 requests
 urllib3
@@ -9,4 +12,5 @@ psycopg2-binary
 google-genai
 python-dotenv
 streamlit
-sentence-transformers
+plotly
+#sentence-transformers
