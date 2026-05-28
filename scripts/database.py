@@ -1,25 +1,70 @@
 import duckdb
+import os
+import sys
 from datetime import datetime, timedelta
 
 DB_PATH = "market_data.duckdb"
 
 
-def get_db_connection(read_only=False):
-    """
-    Returns a native DuckDB connection.
-    - read_only=False: Used by Ingestion Scripts (Writers).
-    - read_only=True: Used by Dashboards and Engines for concurrent reading.
-    """
+def get_db_connection(read_only=True):
     con = duckdb.connect(database=DB_PATH, read_only=read_only)
-
-    # Load required analytical extensions (Required for JSON columns)
     con.execute("INSTALL json;")
     con.execute("LOAD json;")
     return con
 
 
-# Persistent write-connection instance
-engine = get_db_connection(read_only=False)
+class DuckDBEngineProxy:
+    """Thread-safe proxy that automatically assigns read/write locks based on the script."""
+
+    def __init__(self):
+        self.db_path = DB_PATH
+        main_script = os.path.basename(sys.argv[0])
+        # Dashboard is strictly read-only so it never locks the DB
+        self.default_read_only = "dashboard.py" in main_script or "UI" in main_script
+
+    def execute(self, query_string, params=None):
+        con = get_db_connection(read_only=self.default_read_only)
+        try:
+            if params:
+                res = con.execute(query_string, params).df()
+            else:
+                res = con.execute(query_string).df()
+            return DuckDBResultContainer(res)
+        finally:
+            con.close()
+
+    def register(self, view_name, df):
+        # Temporarily upgrade to write-mode for ingestion
+        self.default_read_only = False
+        self._active_write_con = duckdb.connect(database=self.db_path, read_only=False)
+        self._active_write_con.execute("INSTALL json; LOAD json;")
+        self._active_write_con.register(view_name, df)
+
+    def unregister(self, view_name):
+        if hasattr(self, "_active_write_con"):
+            self._active_write_con.unregister(view_name)
+            self._active_write_con.close()
+            del self._active_write_con
+        # Revert back to default state
+        self.default_read_only = "dashboard.py" in os.path.basename(sys.argv[0])
+
+
+class DuckDBResultContainer:
+    def __init__(self, dataframe):
+        self._df = dataframe
+
+    def df(self):
+        return self._df
+
+    def fetchone(self):
+        return tuple(self._df.iloc[0]) if not self._df.empty else None
+
+    def fetchall(self):
+        return [tuple(x) for x in self._df.to_numpy()]
+
+
+# The global engine used by all your scripts
+engine = DuckDBEngineProxy()
 
 
 def initialize_database():
@@ -406,7 +451,12 @@ def initialize_database():
 
 
 # Automatically run on script import to ensure database readiness
-initialize_database()
+if not engine.default_read_only:
+    try:
+        initialize_database()
+    except duckdb.IOException:
+        # If another ingestion script is currently writing, silently pass
+        pass
 
 
 def text(query_string):

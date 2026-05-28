@@ -12,3 +12,4 @@ offline_data_cache
 Thumbs.db
 market_data.duckdb
 market_data.duckdb.wal
+offline_data_cache
