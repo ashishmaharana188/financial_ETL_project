@@ -192,13 +192,20 @@ def build_materialized_views():
             c.daily_hl_spread,
             c.daily_vwap_dev,
             
-            p.oi_pcr,               
-            p.delta_oi_pcr,   
-            b.futures_basis,
+            COALESCE(p.oi_pcr, 0) AS oi_pcr,               
+            COALESCE(p.delta_oi_pcr, 0) AS delta_oi_pcr,   
+            COALESCE(b.futures_basis, 0) AS futures_basis,
+            CASE WHEN b.futures_basis IS NULL THEN 0 ELSE 1 END AS is_fo_eligible,
+            
+            COALESCE("Short_Volume", 0) AS short_volume,
+                CASE 
+                    WHEN "Volume" = 0 OR "Volume" IS NULL THEN 0
+                    ELSE (COALESCE("Short_Volume", 0)::FLOAT / "Volume"::FLOAT) * 100 
+                END AS short_percentage,
             
             COALESCE(e.net_block_volume, 0) AS net_block_volume,
-            
-            -- PROXY: Block Premium/Discount relative to EOD Spot Close
+            CASE WHEN e.avg_block_price IS NULL THEN 0 ELSE 1 END AS has_block_deal,
+
             CASE 
                 WHEN e.avg_block_price IS NULL OR c.close = 0 THEN 0
                 ELSE ((e.avg_block_price - c.close) / c.close) * 100
