@@ -39,7 +39,7 @@ def clean_for_db(df):
 
 
 def parse_fiidii_cash(file_path):
-    df = pd.read_csv(file_path)
+    df = pd.read_csv(file_path, encoding="utf-8", encoding_errors="replace")
     df.columns = df.columns.str.strip().str.lower()
     df["ReportDate"] = pd.to_datetime(df["date"])
 
@@ -85,6 +85,7 @@ def parse_participant_oi(file_path):
     df = df.rename(
         columns={
             "Client Type": "ClientType",
+            "ClientType": "ClientType",
             "Future Index Long": "Future_Index_Long",
             "Future Index Short": "Future_Index_Short",
             "Future Stock Long": "Future_Stock_Long",
@@ -231,12 +232,15 @@ def execute_macro_pipeline(start_date_str="1900-01-01"):
         update_cols = [
             col for col in master_macro_df.columns if col not in conflict_keys
         ]
+
+        # FIX: Explicit Column Mapping to prevent Binder Errors
+        columns_str = ", ".join([f'"{col}"' for col in final_columns])
         set_clause = ", ".join([f'"{col}" = EXCLUDED."{col}"' for col in update_cols])
 
         # Native DuckDB Upsert
         engine.execute(f"""
-            INSERT INTO institutional_ledger 
-            SELECT * FROM temp_inst
+            INSERT INTO institutional_ledger ({columns_str})
+            SELECT {columns_str} FROM temp_inst
             ON CONFLICT ("ReportDate", "ClientType") 
             DO UPDATE SET {set_clause};
         """)

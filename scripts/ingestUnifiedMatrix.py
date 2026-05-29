@@ -9,6 +9,7 @@ from scripts.database import engine
 import io
 import uuid
 import logging
+import re
 
 CACHE_DIR = "offline_data_cache/master_archives"
 
@@ -90,8 +91,79 @@ def clean_for_db(df):
     return df
 
 
+def _safe_load_and_convert_csv(filepath):
+    """
+    Attempts to read a file. If it crashes because the file is an Excel, Zip, or
+    mangled format masking as a .csv, it converts it to a true CSV and overwrites.
+    """
+    try:
+        # Try reading it as a standard CSV first
+        return pd.read_csv(
+            filepath, encoding="utf-8", encoding_errors="replace", on_bad_lines="skip"
+        )
+    except Exception as read_error:
+        print(
+            f"    [!] Format Error reading {filepath}. Attempting conversion... ({read_error})"
+        )
+
+        # 1. Could it be an Excel file masked as a .csv?
+        try:
+            df = pd.read_excel(filepath)
+            df.to_csv(filepath, index=False, encoding="utf-8")
+            print("    [+] Successfully converted Excel -> CSV")
+            return df
+        except Exception:
+            pass
+
+        # 2. Could it be a Zip file masked as a .csv?
+        import zipfile
+
+        try:
+            if zipfile.is_zipfile(filepath):
+                with zipfile.ZipFile(filepath, "r") as z:
+                    # Find the first valid csv inside the zip
+                    csv_names = [n for n in z.namelist() if n.endswith(".csv")]
+                    if csv_names:
+                        target_name = csv_names[0]
+                        temp_path = os.path.join(
+                            os.path.dirname(filepath), "temp_extracted.csv"
+                        )
+
+                        # Extract, read, and replace the original file
+                        with z.open(target_name) as f:
+                            df = pd.read_csv(
+                                f,
+                                encoding="utf-8",
+                                encoding_errors="replace",
+                                on_bad_lines="skip",
+                            )
+
+                        df.to_csv(filepath, index=False, encoding="utf-8")
+                        print("    [+] Successfully unzipped and replaced -> CSV")
+                        return df
+        except Exception:
+            pass
+
+        # If all conversion attempts fail, return an empty dataframe to skip safely
+        print(f"    [-] FATAL FORMAT: Cannot salvage {filepath}. Skipping.")
+        return pd.DataFrame()
+
+
 def parse_cash_and_shorts(cash_file, preloaded_short_df=None):
-    df_cash = pd.read_csv(cash_file)
+
+    try:
+        # Standard fast-path CSV read
+        df_cash = pd.read_csv(
+            cash_file, encoding="utf-8", encoding_errors="replace", on_bad_lines="skip"
+        )
+    except Exception:
+        df_cash = pd.read_excel(cash_file)
+        df_cash.to_csv(cash_file, index=False, encoding="utf-8")
+
+    if df_cash.empty:
+        return pd.DataFrame()
+
+    # 3. Standardize columns
     df_cash.rename(columns=lambda x: x.strip().upper(), inplace=True)
 
     df_cash["DATE1"] = df_cash["DATE1"].astype(str).str.strip()
@@ -120,7 +192,7 @@ def parse_cash_and_shorts(cash_file, preloaded_short_df=None):
     df_cash["ExpiryDate"] = pd.to_datetime("2099-12-31").date()
     df_cash["StrikePrice"] = 0.0
 
-    # Instantly merge using the preloaded RAM object
+    # 4. Merge Shorts
     if preloaded_short_df is not None and not preloaded_short_df.empty:
         df_cash = pd.merge(
             df_cash,
@@ -264,46 +336,105 @@ def parse_mcx(file_path):
     return df
 
 
-def push_chunk_to_db(df, file_name):
-    if df is None or df.empty:
+def push_chunk_to_db(df, file_name="Unknown_File"):
+    """Bypasses psycopg2 and uses DuckDB's Native Arrow Registration for zero-copy ingestion."""
+    if df.empty:
         log_audit(file_name, 0, 0, 0, "SKIPPED_EMPTY")
         return
 
     raw_count = len(df)
 
-    # 1. Enforce Primary Key level deduplication in Pandas before hitting DB
-    pk_cols = ["Ticker", "ReportDate", "InstrumentType", "ExpiryDate", "StrikePrice"]
+    # Exact 21 columns as defined by your architecture
+    final_columns = [
+        "Ticker",
+        "ReportDate",
+        "InstrumentType",
+        "ExpiryDate",
+        "StrikePrice",
+        "OptionType",
+        "Exchange_Series",
+        "Open",
+        "High",
+        "Low",
+        "Close",
+        "Volume",
+        "Turnover",
+        "No_Of_Trades",
+        "Delivery_Qty",
+        "Delivery_Percentage",
+        "Short_Volume",
+        "Open_Interest",
+        "Change_In_OI",
+        "Settlement_Price",
+        "Underlying_Price",
+    ]
+
+    for col in final_columns:
+        if col not in df.columns:
+            df[col] = pd.NA
+
+    # Explicitly filter out any phantom CSV garbage columns
+    df = df[final_columns]
+    df = clean_for_db(df)
+
+    # 1. Clean duplicates in Python first (Including OptionType!)
+    pk_cols = [
+        "Ticker",
+        "ReportDate",
+        "InstrumentType",
+        "ExpiryDate",
+        "StrikePrice",
+        "OptionType",
+        "Exchange_Series",
+    ]
+    df["OptionType"] = df["OptionType"].fillna("XX")
+    df["Exchange_Series"] = df["Exchange_Series"].fillna("XX")
+    df["StrikePrice"] = df["StrikePrice"].fillna(0.0)
+
     df = df.drop_duplicates(subset=pk_cols, keep="last")
     dedup_count = len(df)
 
+    print(f"    -> [BULK PUSH] Streaming {len(df)} rows to DuckDB Arrow Memory...")
+
+    # 2. Native DuckDB Columnar Insertion
+    view_name = f"temp_master_{uuid.uuid4().hex[:8]}"
+
     try:
-        # 2. Register zero-copy DataFrame
-        engine.register("temp_matrix", df)
+        # Register the memory block via our Proxy
+        engine.register(view_name, df)
 
-        # 3. Dynamically build update clause
-        update_cols = [col for col in df.columns if col not in pk_cols]
-        set_clause = ", ".join([f'"{col}" = EXCLUDED."{col}"' for col in update_cols])
+        # Explicit column mapping prevents "SELECT *" Binder Errors
+        columns_str = ", ".join([f'"{col}"' for col in final_columns])
+        set_clause = ", ".join(
+            [
+                f'"{col}" = EXCLUDED."{col}"'
+                for col in final_columns
+                if col not in pk_cols
+            ]
+        )
 
-        # 4. Native DuckDB Upsert (Instant Columnar Transfer)
-        engine.execute(f"""
-            INSERT INTO unified_market_master 
-            SELECT * FROM temp_matrix
-            ON CONFLICT ("Ticker", "ReportDate", "InstrumentType", "ExpiryDate", "StrikePrice") 
+        # The DuckDB Native Upsert
+        upsert_query = f"""
+            INSERT INTO unified_market_master ({columns_str})
+            SELECT {columns_str} FROM {view_name}
+            ON CONFLICT ("Ticker", "ReportDate", "InstrumentType", "ExpiryDate", "StrikePrice", "OptionType", "Exchange_Series")
             DO UPDATE SET {set_clause};
-        """)
+        """
 
-        # 5. Cleanup
-        engine.unregister("temp_matrix")
+        engine.execute(upsert_query)
+        engine.unregister(view_name)
 
         log_audit(file_name, raw_count, dedup_count, dedup_count, "SUCCESS")
-        print(f"    [+] Pushed {dedup_count} rows.")
 
     except Exception as e:
-        error_msg = str(e).replace("\\n", " ")[:80]
+        error_msg = str(e).replace("\n", " ")[:80]
         log_audit(file_name, raw_count, dedup_count, 0, f"FAILED: {error_msg}")
-        print(f"    [-] DB Push Failed: {error_msg}")
-        if "temp_matrix" in engine.execute("SHOW TABLES").df().values:
-            engine.unregister("temp_matrix")
+        print(f"    [-] CRITICAL Bulk Push Error: {e}")
+        # Always clean up memory on failure
+        try:
+            engine.unregister(view_name)
+        except:
+            pass
 
 
 def execute_pipeline(start_date_str="1900-01-01"):
@@ -349,7 +480,12 @@ def execute_pipeline(start_date_str="1900-01-01"):
     global_short_df = None
     if short_files:
         print("[*] Pre-loading Master Short Selling Inventory into RAM...")
-        df_short = pd.read_csv(short_files[0])
+        df_short = pd.read_csv(
+            short_files[0],
+            encoding="utf-8",
+            encoding_errors="replace",
+            on_bad_lines="skip",
+        )
         df_short.rename(columns=lambda x: x.strip(), inplace=True)
         df_short["Date"] = df_short["Date"].astype(str).str.strip()
         df_short["ReportDate"] = pd.to_datetime(
@@ -392,12 +528,22 @@ def execute_pipeline(start_date_str="1900-01-01"):
                         ".csv"
                     ):
                         with z.open(file_name) as f:
-                            df = pd.read_csv(f)
+                            df = pd.read_csv(
+                                f,
+                                encoding="utf-8",
+                                encoding_errors="replace",
+                                on_bad_lines="skip",
+                            )
                             push_chunk_to_db(parse_modern_fo_df(df), file_name)
 
                     elif file_name.startswith("fo") and file_name.endswith("bhav.csv"):
                         with z.open(file_name) as f:
-                            df = pd.read_csv(f)
+                            df = pd.read_csv(
+                                f,
+                                encoding="utf-8",
+                                encoding_errors="replace",
+                                on_bad_lines="skip",
+                            )
                             push_chunk_to_db(parse_legacy_fo_df(df), file_name)
         except zipfile.BadZipFile:
             print(f"    [-] Corrupted Zip File skipped: {z_path}")

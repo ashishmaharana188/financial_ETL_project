@@ -23,7 +23,14 @@ class DuckDBEngineProxy:
         self.default_read_only = "dashboard.py" in main_script or "UI" in main_script
 
     def execute(self, query_string, params=None):
-        con = get_db_connection(read_only=self.default_read_only)
+        # THE FIX: If we have an active write connection (from a .register() block), route through it!
+        is_active_writer = hasattr(self, "_active_write_con")
+        con = (
+            self._active_write_con
+            if is_active_writer
+            else get_db_connection(read_only=self.default_read_only)
+        )
+
         try:
             if params:
                 res = con.execute(query_string, params).df()
@@ -31,13 +38,22 @@ class DuckDBEngineProxy:
                 res = con.execute(query_string).df()
             return DuckDBResultContainer(res)
         finally:
-            con.close()
+            # Only close the connection automatically if it was a temporary read/write checkout.
+            # Writers bound by .register() are closed explicitly by .unregister().
+            if not is_active_writer:
+                con.close()
 
     def register(self, view_name, df):
         # Temporarily upgrade to write-mode for ingestion
         self.default_read_only = False
-        self._active_write_con = duckdb.connect(database=self.db_path, read_only=False)
-        self._active_write_con.execute("INSTALL json; LOAD json;")
+
+        # If a write connection doesn't exist yet, open one
+        if not hasattr(self, "_active_write_con"):
+            self._active_write_con = duckdb.connect(
+                database=self.db_path, read_only=False
+            )
+            self._active_write_con.execute("INSTALL json; LOAD json;")
+
         self._active_write_con.register(view_name, df)
 
     def unregister(self, view_name):
@@ -166,33 +182,36 @@ def initialize_database():
         );
     """)
 
+    # engine.execute("DROP TABLE IF EXISTS unified_market_master;")
+
     # 7. Unified Market Master
     engine.execute("""
         CREATE TABLE IF NOT EXISTS unified_market_master (
             "Ticker" VARCHAR,
-            "ReportDate" TIMESTAMP,
+            "ReportDate" DATE,
             "InstrumentType" VARCHAR,
             "ExpiryDate" DATE,
             "StrikePrice" DOUBLE,
+            "OptionType" VARCHAR,
+            "Exchange_Series" VARCHAR,
             "Open" DOUBLE,
             "High" DOUBLE,
             "Low" DOUBLE,
             "Close" DOUBLE,
             "Volume" BIGINT,
-            "Exchange_Series" VARCHAR,
             "Turnover" DOUBLE,
             "No_Of_Trades" BIGINT,
             "Delivery_Qty" BIGINT,
             "Delivery_Percentage" DOUBLE,
             "Short_Volume" BIGINT,
-            "OptionType" VARCHAR,
             "Open_Interest" BIGINT,
             "Change_In_OI" BIGINT,
             "Settlement_Price" DOUBLE,
             "Underlying_Price" DOUBLE,
-            PRIMARY KEY ("Ticker", "ReportDate", "InstrumentType", "ExpiryDate", "StrikePrice")
+            PRIMARY KEY ("Ticker", "ReportDate", "InstrumentType", "ExpiryDate", "StrikePrice", "OptionType", "Exchange_Series")
         );
     """)
+    engine.execute("DROP TABLE IF EXISTS institutional_ledger;")
 
     # 8. Institutional Ledger
     engine.execute("""

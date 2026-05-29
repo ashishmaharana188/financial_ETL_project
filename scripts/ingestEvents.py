@@ -186,7 +186,7 @@ def execute_events_pipeline(start_date_str="1900-01-01"):
         print("  All parsed events are older than the resume checkpoint.")
         return
 
-    push_chunk_to_db(master_events_df)
+    push_chunk_to_db(master_events_df, "Batch_Events_Concat")
     print("[SUCCESS] Trade Events Ledger Update Complete.")
 
 
