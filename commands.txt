@@ -1,5 +1,8 @@
 source .venv/Scripts/activate
 py -m streamlit run dashboard.py
+
+duckdb -ui
+
 python -m scripts.statementScrape
 pip install -r requirements.txt
 

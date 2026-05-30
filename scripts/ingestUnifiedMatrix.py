@@ -337,32 +337,31 @@ def parse_mcx(file_path):
 
 
 def push_chunk_to_db(df, file_name="Unknown_File"):
-    """Bypasses psycopg2 and uses DuckDB's Native Arrow Registration for zero-copy ingestion."""
+    """Bypasses CSV serialization. Uses DuckDB Zero-Copy registration with inline SQL trimming."""
     if df.empty:
         log_audit(file_name, 0, 0, 0, "SKIPPED_EMPTY")
         return
 
     raw_count = len(df)
 
-    # Exact 21 columns as defined by your architecture
     final_columns = [
         "Ticker",
         "ReportDate",
         "InstrumentType",
         "ExpiryDate",
         "StrikePrice",
-        "OptionType",
-        "Exchange_Series",
         "Open",
         "High",
         "Low",
         "Close",
         "Volume",
+        "Exchange_Series",
         "Turnover",
         "No_Of_Trades",
         "Delivery_Qty",
         "Delivery_Percentage",
         "Short_Volume",
+        "OptionType",
         "Open_Interest",
         "Change_In_OI",
         "Settlement_Price",
@@ -371,13 +370,12 @@ def push_chunk_to_db(df, file_name="Unknown_File"):
 
     for col in final_columns:
         if col not in df.columns:
-            df[col] = pd.NA
+            df[col] = None
 
-    # Explicitly filter out any phantom CSV garbage columns
     df = df[final_columns]
     df = clean_for_db(df)
 
-    # 1. Clean duplicates in Python first (Including OptionType!)
+    # Standardize Nulls for Composite Keys
     pk_cols = [
         "Ticker",
         "ReportDate",
@@ -394,17 +392,23 @@ def push_chunk_to_db(df, file_name="Unknown_File"):
     df = df.drop_duplicates(subset=pk_cols, keep="last")
     dedup_count = len(df)
 
-    print(f"    -> [BULK PUSH] Streaming {len(df)} rows to DuckDB Arrow Memory...")
+    print(f"    -> [BULK PUSH] Zero-Copy Native Upsert for {len(df)} rows...")
 
-    # 2. Native DuckDB Columnar Insertion
-    view_name = f"temp_master_{uuid.uuid4().hex[:8]}"
+    # 1. Register Pandas DataFrame directly into DuckDB's C++ Memory Space
+    temp_view = f"temp_master_{uuid.uuid4().hex[:8]}"
+    engine.register(temp_view, df)
 
     try:
-        # Register the memory block via our Proxy
-        engine.register(view_name, df)
+        # 2. Build the SELECT projection to apply TRIM() at C++ speed natively
+        select_cols = []
+        for col in final_columns:
+            if col in ["Ticker", "InstrumentType", "OptionType", "Exchange_Series"]:
+                select_cols.append(f'TRIM("{col}") AS "{col}"')
+            else:
+                select_cols.append(f'"{col}"')
 
-        # Explicit column mapping prevents "SELECT *" Binder Errors
-        columns_str = ", ".join([f'"{col}"' for col in final_columns])
+        select_clause = ", ".join(select_cols)
+        insert_cols = ", ".join([f'"{c}"' for c in final_columns])
         set_clause = ", ".join(
             [
                 f'"{col}" = EXCLUDED."{col}"'
@@ -413,28 +417,25 @@ def push_chunk_to_db(df, file_name="Unknown_File"):
             ]
         )
 
-        # The DuckDB Native Upsert
+        # 3. Execute Upsert with Inline Transformation
         upsert_query = f"""
-            INSERT INTO unified_market_master ({columns_str})
-            SELECT {columns_str} FROM {view_name}
-            ON CONFLICT ("Ticker", "ReportDate", "InstrumentType", "ExpiryDate", "StrikePrice", "OptionType", "Exchange_Series")
+            INSERT INTO unified_market_master ({insert_cols})
+            SELECT {select_clause} FROM {temp_view}
+            ON CONFLICT ({", ".join([f'"{k}"' for k in pk_cols])})
             DO UPDATE SET {set_clause};
         """
 
         engine.execute(upsert_query)
-        engine.unregister(view_name)
-
         log_audit(file_name, raw_count, dedup_count, dedup_count, "SUCCESS")
 
     except Exception as e:
         error_msg = str(e).replace("\n", " ")[:80]
         log_audit(file_name, raw_count, dedup_count, 0, f"FAILED: {error_msg}")
         print(f"    [-] CRITICAL Bulk Push Error: {e}")
-        # Always clean up memory on failure
-        try:
-            engine.unregister(view_name)
-        except:
-            pass
+
+    finally:
+        # 4. Clean up RAM footprint
+        engine.unregister(temp_view)
 
 
 def execute_pipeline(start_date_str="1900-01-01"):

@@ -84,7 +84,6 @@ else:
     )
 
 
-# Define the Custom Upsert Logic
 def duckdb_upsert(df: pd.DataFrame, table_name: str, conflict_keys: list):
     """
     Executes a zero-copy native Upsert from Pandas to DuckDB.
@@ -95,6 +94,10 @@ def duckdb_upsert(df: pd.DataFrame, table_name: str, conflict_keys: list):
     # 1. Register the DataFrame as a zero-copy virtual table
     engine.register("temp_upsert_view", df)
 
+    # Extract and format columns to explicitly route data by name, bypassing positional errors
+    quoted_cols = [f'"{col}"' for col in df.columns]
+    cols_str = ", ".join(quoted_cols)
+
     # 2. Dynamically build the ON CONFLICT DO UPDATE clause
     update_cols = [col for col in df.columns if col not in conflict_keys]
 
@@ -104,14 +107,20 @@ def duckdb_upsert(df: pd.DataFrame, table_name: str, conflict_keys: list):
         conflict_str = ", ".join([f'"{k}"' for k in conflict_keys])
 
         query = f"""
-            INSERT INTO {table_name} 
-            SELECT * FROM temp_upsert_view
+            INSERT INTO {table_name} ({cols_str})
+            SELECT {cols_str} FROM temp_upsert_view
             ON CONFLICT ({conflict_str}) 
             DO UPDATE SET {set_clause};
         """
     else:
         # Fallback for tables where we only insert new records and don't update existing
-        query = f"INSERT OR IGNORE INTO {table_name} SELECT * FROM temp_upsert_view;"
+        # FIX: Replaced SQLite syntax with DuckDB's DO NOTHING syntax
+        conflict_str = ", ".join([f'"{k}"' for k in conflict_keys])
+        query = f"""
+            INSERT INTO {table_name} ({cols_str}) 
+            SELECT {cols_str} FROM temp_upsert_view
+            ON CONFLICT ({conflict_str}) DO NOTHING;
+        """
 
     # 3. Execute and cleanup
     engine.execute(query)
@@ -586,7 +595,6 @@ def fetch_all_financials(ticker, requested_source="auto"):
 
 
 def update_company_profile(ticker: str):
-
     try:
         # Try the base ticker first, then append .NS if it fails or lacks sector data
         tickers_to_try = [ticker, f"{ticker}.NS"]
@@ -620,36 +628,56 @@ def update_company_profile(ticker: str):
         exchange = info.get("exchange", "Unknown")
         company_name = info.get("shortName", ticker)
 
-        # PostgreSQL Upsert Logic for the new market_metadata schema
-        stmt = insert(market_metadata).values(
-            Ticker=ticker,
-            IndicatorName=company_name,
-            TargetTable="market_pricing_daily",  # Required non-nullable field
-            Sector=sector,
-            Industry=industry,
-            AssetClass="Equity",  # Required non-nullable field
-            Exchange=exchange,
-            IsActive=True,
+        # Fix Exchange mapping constraint: Convert NSI to NSE
+        if exchange == "NSI":
+            exchange = "NSE"
+
+        # Replaced SQLAlchemy Core Upsert with DuckDB-compatible native mechanics
+        df_single = pd.DataFrame(
+            [
+                {
+                    "Ticker": ticker,
+                    "IndicatorName": company_name,
+                    "TargetTable": "market_pricing_daily",  # Required non-nullable field
+                    "Sector": sector,
+                    "Industry": industry,
+                    "AssetClass": "Equity",  # Required non-nullable field
+                    "Exchange": exchange,
+                    "IsActive": True,
+                }
+            ]
         )
 
-        # Update fields if the ticker already exists
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["Ticker"],
-            set_={
-                "Sector": stmt.excluded.Sector,
-                "Industry": stmt.excluded.Industry,
-                "IndicatorName": stmt.excluded.IndicatorName,
-                "Exchange": stmt.excluded.Exchange,
-            },
+        engine.register("temp_profile_meta", df_single)
+
+        engine.execute("""
+            INSERT INTO market_metadata (
+                "Ticker", "IndicatorName", "TargetTable", "Sector", "Industry", "AssetClass", "Exchange", "IsActive"
+            )
+            SELECT 
+                "Ticker", "IndicatorName", "TargetTable", "Sector", "Industry", "AssetClass", "Exchange", "IsActive" 
+            FROM temp_profile_meta
+            ON CONFLICT ("Ticker") 
+            DO UPDATE SET 
+                "Sector" = EXCLUDED."Sector",
+                "Industry" = EXCLUDED."Industry",
+                "IndicatorName" = EXCLUDED."IndicatorName",
+                "Exchange" = EXCLUDED."Exchange";
+        """)
+
+        engine.unregister("temp_profile_meta")
+
+        print(
+            f"[{ticker}] Profile Synced -> Sector: {sector} | Industry: {industry} | Exchange: {exchange}"
         )
-
-        with engine.begin() as conn:
-            conn.execute(stmt)
-
-        print(f"[{ticker}] Profile Synced -> Sector: {sector} | Industry: {industry}")
 
     except Exception as e:
         print(f"[{ticker}] Warning: Failed to sync company profile: {e}")
+        # Safeguard to clear internal catalog registration in case of runtime failure
+        try:
+            engine.unregister("temp_profile_meta")
+        except Exception:
+            pass
 
 
 def clean_financial_dataframe(df):
@@ -2348,7 +2376,7 @@ def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
             )
 
             # UPSERT TO POSTGRES
-            print(f"[{ticker}] Upserting Validated Data to Postgres...")
+            print(f"[{ticker}] Upserting Validated Data to duckdb")
 
             duckdb_upsert(
                 df=clean_yearly_income_statement,
@@ -2395,7 +2423,7 @@ def run_etl_pipeline(target_tickers, ai_mode="local", requested_source="auto"):
                     conflict_keys=["Ticker", "ReportDate"],
                 )
 
-            print(f"[{ticker}] Processing complete. Pausing for rate limits...")
+            print(f"[{ticker}] Processing complete. Pausing for rate limits")
             time.sleep(12)
 
     finally:

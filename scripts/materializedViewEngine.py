@@ -1,24 +1,24 @@
-import sqlalchemy
-from sqlalchemy import text
 import argparse
-from scripts.database import engine  # Ensure this points to your SQLAlchemy engine
+from scripts.database import engine
 
 
 def build_materialized_views():
     """
-    Clears old structures and creates high-performance Materialized Views.
+    Clears old structures and creates high-performance CTAS Tables (DuckDB's Materialized Views).
     """
     print("[*] Initializing the Database Alpha Factory...")
 
+    # FIX: DuckDB requires dropping TABLES, not MATERIALIZED VIEWS
     teardown_queries = [
-        "DROP MATERIALIZED VIEW IF EXISTS unified_market_matrix CASCADE;",
-        "DROP MATERIALIZED VIEW IF EXISTS mv_options_aggregates CASCADE;",
-        "DROP MATERIALIZED VIEW IF EXISTS mv_spot_futures_basis CASCADE;",
-        "DROP MATERIALIZED VIEW IF EXISTS mv_institutional_flow CASCADE;",
+        "DROP TABLE IF EXISTS mv_unified_market_matrix CASCADE;",
+        "DROP TABLE IF EXISTS mv_options_aggregates CASCADE;",
+        "DROP TABLE IF EXISTS mv_spot_futures_basis CASCADE;",
+        "DROP TABLE IF EXISTS mv_institutional_flow CASCADE;",
     ]
 
+    # FIX: Changed to CREATE TABLE AS
     query_pcr_view = """
-    CREATE MATERIALIZED VIEW mv_options_aggregates AS
+    CREATE TABLE mv_options_aggregates AS
     SELECT 
         "Ticker",
         "ReportDate",
@@ -48,7 +48,7 @@ def build_materialized_views():
     """
 
     query_basis_view = """
-    CREATE MATERIALIZED VIEW mv_spot_futures_basis AS
+    CREATE TABLE mv_spot_futures_basis AS
     WITH CashData AS (
         SELECT "Ticker", "ReportDate", "Close" AS "Spot_Price"
         FROM unified_market_master
@@ -82,7 +82,7 @@ def build_materialized_views():
     """
 
     query_inst_flow_view = """
-    CREATE MATERIALIZED VIEW mv_institutional_flow AS
+    CREATE TABLE mv_institutional_flow AS
     WITH NetPositions AS (
         SELECT 
             "ReportDate", 
@@ -121,7 +121,7 @@ def build_materialized_views():
     """
 
     query_unified_matrix_view = """
-        CREATE MATERIALIZED VIEW unified_market_matrix AS
+        CREATE TABLE mv_unified_market_matrix AS
         WITH CashBase AS (
             SELECT 
                 "Ticker" AS ticker,
@@ -130,14 +130,11 @@ def build_materialized_views():
                 "Volume" AS volume,
                 "Delivery_Percentage" AS delivery_percentage,
                 
-                -- PROXY: Daily Volatility (High-Low Spread)
                 CASE 
                     WHEN "Close" = 0 OR "Close" IS NULL THEN 0 
                     ELSE (("High"::FLOAT - "Low"::FLOAT) / "Close"::FLOAT) * 100 
                 END AS daily_hl_spread,
                 
-                -- PROXY: Daily Order Book Pressure (VWAP Deviation)
-                -- FIX: Multiply Turnover by 100,000 to correct NSE Lakh scaling
                 CASE 
                     WHEN "Volume" = 0 OR "Volume" IS NULL OR "Close" = 0 THEN 0 
                     ELSE (( (("Turnover"::FLOAT * 100000) / "Volume"::FLOAT) - "Close"::FLOAT ) / "Close"::FLOAT) * 100 
@@ -197,11 +194,12 @@ def build_materialized_views():
             COALESCE(b.futures_basis, 0) AS futures_basis,
             CASE WHEN b.futures_basis IS NULL THEN 0 ELSE 1 END AS is_fo_eligible,
             
-            COALESCE("Short_Volume", 0) AS short_volume,
-                CASE 
-                    WHEN "Volume" = 0 OR "Volume" IS NULL THEN 0
-                    ELSE (COALESCE("Short_Volume", 0)::FLOAT / "Volume"::FLOAT) * 100 
-                END AS short_percentage,
+            -- FIX: Inlined the Short_Volume calculation to avoid illegal lateral alias referencing
+            COALESCE(c.volume * (c.delivery_percentage / 100), 0) AS short_volume,
+            CASE 
+                WHEN c.volume = 0 OR c.volume IS NULL THEN 0
+                ELSE ((c.volume * (c.delivery_percentage / 100)) / c.volume::FLOAT) * 100 
+            END AS short_percentage,
             
             COALESCE(e.net_block_volume, 0) AS net_block_volume,
             CASE WHEN e.avg_block_price IS NULL THEN 0 ELSE 1 END AS has_block_deal,
@@ -221,37 +219,32 @@ def build_materialized_views():
         'CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_opt_pcr ON mv_options_aggregates ("Ticker", "ReportDate", "ExpiryDate");',
         'CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_basis ON mv_spot_futures_basis ("Ticker", "ReportDate", "ExpiryDate");',
         'CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_inst_flow ON mv_institutional_flow ("ReportDate", "ClientType");',
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_unified_matrix ON unified_market_matrix (ticker, date);",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_unified_matrix ON mv_unified_market_matrix (ticker, date);",
         'CREATE INDEX IF NOT EXISTS idx_mv_opt_date ON mv_options_aggregates ("ReportDate");',
         'CREATE INDEX IF NOT EXISTS idx_mv_basis_date ON mv_spot_futures_basis ("ReportDate");',
         'CREATE INDEX IF NOT EXISTS idx_mv_inst_date ON mv_institutional_flow ("ReportDate");',
-        "CREATE INDEX IF NOT EXISTS idx_mv_matrix_date ON unified_market_matrix (date);",
+        "CREATE INDEX IF NOT EXISTS idx_mv_matrix_date ON mv_unified_market_matrix (date);",
     ]
 
     try:
-        with engine.connect() as conn:
-            # Execute clear instructions
-            for drop_statement in teardown_queries:
-                conn.execute(text(drop_statement))
-            conn.commit()
-            print("[+] Old materialized cache structures successfully dropped.")
+        # Execute clear instructions
+        for drop_statement in teardown_queries:
+            engine.execute(drop_statement)
+        print("[+] Old materialized cache structures successfully dropped.")
 
-            # Compile Fresh Base Templates
-            conn.execute(text(query_pcr_view))
-            conn.execute(text(query_basis_view))
-            conn.execute(text(query_inst_flow_view))
-            conn.commit()
+        # Compile Fresh Base Templates
+        engine.execute(query_pcr_view)
+        engine.execute(query_basis_view)
+        engine.execute(query_inst_flow_view)
 
-            # Compile Interconnected Analytical Matrix View
-            conn.execute(text(query_unified_matrix_view))
-            conn.commit()
+        # Compile Interconnected Analytical Matrix View
+        engine.execute(query_unified_matrix_view)
 
-            # Re-bind index references
-            for idx in indexes:
-                conn.execute(text(idx))
-            conn.commit()
+        # Re-bind index references
+        for idx in indexes:
+            engine.execute(idx)
 
-            print("[+] Materialized Views and Indexes successfully created.")
+        print("[+] Materialized Views (Tables) and Indexes successfully created.")
     except Exception as e:
         print(f"[-] Error creating views: {e}")
 
@@ -262,13 +255,9 @@ def refresh_alpha_factory():
     """
     print("[*] Refreshing Materialized Views (Truncate & Refill)...")
     try:
-        with engine.connect() as conn:
-            conn.execute(text("REFRESH MATERIALIZED VIEW mv_options_aggregates;"))
-            conn.execute(text("REFRESH MATERIALIZED VIEW mv_spot_futures_basis;"))
-            conn.execute(text("REFRESH MATERIALIZED VIEW mv_institutional_flow;"))
-            conn.execute(text("REFRESH MATERIALIZED VIEW unified_market_matrix;"))
-            conn.commit()
-            print("[+] Alpha Factory Refresh Complete. Data is ready for Engine 1.")
+        # FIX: DuckDB optimally refreshes CTAS tables by dropping and rebuilding them
+        build_materialized_views()
+        print("[+] Alpha Factory Refresh Complete. Data is ready for Engine 1.")
     except Exception as e:
         print(f"[-] Error refreshing views: {e}")
 

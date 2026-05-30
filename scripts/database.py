@@ -211,7 +211,7 @@ def initialize_database():
             PRIMARY KEY ("Ticker", "ReportDate", "InstrumentType", "ExpiryDate", "StrikePrice", "OptionType", "Exchange_Series")
         );
     """)
-    engine.execute("DROP TABLE IF EXISTS institutional_ledger;")
+    # engine.execute("DROP TABLE IF EXISTS institutional_ledger;")
 
     # 8. Institutional Ledger
     engine.execute("""

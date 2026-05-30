@@ -11,9 +11,8 @@ def register_discovered_tickers(tickers, data_source="auto"):
         return
 
     print(f"\\nRegistering discovered client tickers from {data_source.upper()}...")
-
-    # Create a DataFrame for bulk native insertion
     records = []
+
     for ticker in tickers:
         if data_source in ["screener", "indianapi"]:
             exchange = "NSE"
@@ -22,7 +21,17 @@ def register_discovered_tickers(tickers, data_source="auto"):
         elif ticker.endswith(".BO"):
             exchange = "BSE"
         else:
-            exchange = "US"
+            # FIX: TradingView explicitly requires NASDAQ/NYSE, not generic "US"
+            try:
+                raw_exchange = yf.Ticker(ticker).info.get("exchange", "NASDAQ")
+                if "NASDAQ" in raw_exchange.upper():
+                    exchange = "NASDAQ"
+                elif "NYSE" in raw_exchange.upper():
+                    exchange = "NYSE"
+                else:
+                    exchange = "NASDAQ"
+            except Exception:
+                exchange = "NASDAQ"
 
         records.append(
             {
@@ -36,309 +45,359 @@ def register_discovered_tickers(tickers, data_source="auto"):
             }
         )
 
+    # DUCKDB FIX: Replaced iterative text query with Native Zero-Copy Upsert
     df_meta = pd.DataFrame(records)
-    engine.register("temp_meta", df_meta)
-
-    # Native DuckDB Upsert
-    engine.execute("""
-        INSERT INTO market_metadata ("Ticker", "IndicatorName", "TargetTable", "AssetClass", "Exchange", "IsActive", "Description")
-        SELECT "Ticker", "IndicatorName", "TargetTable", "AssetClass", "Exchange", "IsActive", "Description" FROM temp_meta
-        ON CONFLICT ("Ticker") 
-        DO UPDATE SET 
-            "IndicatorName" = EXCLUDED."IndicatorName",
-            "TargetTable" = EXCLUDED."TargetTable",
-            "AssetClass" = EXCLUDED."AssetClass",
-            "Exchange" = EXCLUDED."Exchange",
-            "IsActive" = EXCLUDED."IsActive",
-            "Description" = EXCLUDED."Description";
-    """)
-    engine.unregister("temp_meta")
+    try:
+        engine.register("temp_macro_meta", df_meta)
+        engine.execute("""
+            INSERT INTO market_metadata ("Ticker", "IndicatorName", "TargetTable", "AssetClass", "Exchange", "IsActive", "Description")
+            SELECT "Ticker", "IndicatorName", "TargetTable", "AssetClass", "Exchange", "IsActive", "Description" FROM temp_macro_meta
+            ON CONFLICT ("Ticker") 
+            DO UPDATE SET 
+                "Exchange" = EXCLUDED."Exchange",
+                "Description" = EXCLUDED."Description";
+        """)
+        engine.unregister("temp_macro_meta")
+        print(f"SUCCESS: {len(records)} client tickers verified in market_metadata.")
+    except Exception as e:
+        print(f"    [ERROR] Failed to register tickers: {e}")
 
 
-def get_registered_targets():
+def get_active_global_assets():
     query = """
-        SELECT "Ticker", "TargetTable", "Exchange" 
+        SELECT "Ticker", "AssetClass","Exchange"
         FROM market_metadata 
-        WHERE "IsActive" = true 
-        AND "TargetTable" IN ('macro_indicators', 'global_assets')
+        WHERE "IsActive" = true; 
     """
     try:
+        # DUCKDB FIX: execute().df() instead of SQLAlchemy read_sql
         return engine.execute(query).df()
     except Exception as e:
-        print(f"Failed to fetch targets from DuckDB: {e}")
+        print(f"[ERROR] Failed to fetch equities from DB: {e}")
         return pd.DataFrame()
 
 
-tv = TvDatafeed()
+def get_yf_period(interval):
+    if interval == "1m":
+        return "7d"
+    elif interval in ["5m", "15m", "30m"]:
+        return "60d"
+    elif interval == "1h":
+        return "730d"
+    return "max"
 
 
-def fetch_hybrid_macro_data(intervals=["1d"], period_days=3000):
-    targets_df = get_registered_targets()
-    if targets_df.empty:
-        print("No active macro/global targets found in metadata table.")
-        return None
-
-    interval_map = {
-        "1m": Interval.in_1_minute,
-        "5m": Interval.in_5_minute,
-        "15m": Interval.in_15_minute,
-        "30m": Interval.in_30_minute,
-        "1h": Interval.in_1_hour,
+def get_tv_interval(interval_str):
+    mapping = {
         "1d": Interval.in_daily,
-        "1wk": Interval.in_weekly,
-        "1mo": Interval.in_monthly,
+        "1h": Interval.in_1_hour,
+        "30m": Interval.in_30_minute,
+        "5m": Interval.in_5_minute,
+        "1m": Interval.in_1_minute,
+    }
+    return mapping.get(interval_str, Interval.in_daily)
+
+
+def fetch_hybrid_macro_data(
+    intervals=["1d", "1h", "30m", "5m", "1m"], period_days=1000
+):
+    print("Initializing Hybrid Multi-Timeframe Spigots...")
+    raw_data_frames = []
+
+    req_cols = ["Open", "High", "Low", "Close", "Volume"]
+
+    # --- 1. DEFINE TARGETS (Macro Indicators) ---
+    yf_macro = {
+        "US_10Y_Yield": "^TNX",
+        "Brent_Crude": "BZ=F",
+        "USD_INR": "INR=X",
+        "US_Dollar_Index": "DX-Y.NYB",
+        "Broad_Commodity": "DBC",
+        "US_VIX": "^VIX",
+        "Nifty_50": "^NSEI",
     }
 
-    bars_per_day = {"1d": 1, "1h": 7, "30m": 13, "15m": 26, "5m": 78, "1m": 390}
+    tv_macro = {
+        "India_10Y_Yield": ("IN10Y", "TVC"),
+        "India_CPI": ("INCPI", "ECONOMICS"),
+        "India_VIX": ("INDIAVIX", "NSE"),
+    }
 
-    all_data = []
+    # --- 2. FETCH MACRO (YF) ---
+    for name, ticker in yf_macro.items():
+        for interval in intervals:
+            try:
+                print(f" -> YF Macro Fetch: {name} | {interval}...")
+                tick = yf.Ticker(ticker)
+                hist = tick.history(period=get_yf_period(interval), interval=interval)
 
-    for index, row in targets_df.iterrows():
-        symbol = row["Ticker"]
-        table_category = (
-            "MACRO" if row["TargetTable"] == "macro_indicators" else "ASSET"
-        )
-        exchange = row["Exchange"] if pd.notna(row["Exchange"]) else "NSE"
+                if not hist.empty:
+                    df = hist.copy()
+                    df.index = pd.to_datetime(df.index).tz_localize(None)
+                    df.index.name = "ReportDate"
+                    df.reset_index(inplace=True)
 
-        print(f"\\n[{table_category}] Fetching {symbol} ({exchange})")
+                    df["EntityName"] = name
+                    df["Timeframe"] = interval
+                    df["Category"] = "MACRO"
+                    df["AssetClass"] = None
 
-        for inv_str in intervals:
-            if inv_str not in interval_map:
-                continue
+                    for col in req_cols:
+                        if col not in df.columns:
+                            df[col] = None
 
-            n_bars = period_days * bars_per_day.get(inv_str, 1)
-            # Cap at TradingView's absolute limits based on resolution
-            if inv_str in ["1m", "5m"]:
-                n_bars = min(n_bars, 5000)
-            elif inv_str in ["15m", "30m", "1h"]:
-                n_bars = min(n_bars, 10000)
-            else:
-                n_bars = min(n_bars, 20000)
-
-            print(f" -> Interval: {inv_str} | Attempting {n_bars} bars")
-
-            df = tv.get_hist(
-                symbol=symbol,
-                exchange=exchange,
-                interval=interval_map[inv_str],
-                n_bars=n_bars,
-            )
-
-            if df is not None and not df.empty:
-                df.reset_index(inplace=True)
-                df.rename(
-                    columns={
-                        "datetime": "ReportDate",
-                        "open": "Open",
-                        "high": "High",
-                        "low": "Low",
-                        "close": "Close",
-                        "volume": "Volume",
-                    },
-                    inplace=True,
-                )
-
-                df["EntityName"] = symbol
-                df["Timeframe"] = inv_str
-                df["Category"] = table_category
-
-                # Extract explicit time component for intraday data
-                df["ReportTime"] = df["ReportDate"].dt.time.astype(str)
-                df["ReportDate"] = df["ReportDate"].dt.date.astype(str)
-
-                # Assign appropriate Close/Value mappings based on category
-                if table_category == "MACRO":
-                    df["Close_Value"] = df["Close"]
-
-                all_data.append(df)
-                print(f"    [+] Success: {len(df)} records fetched.")
-            else:
-                print(f"    [-] Failed or Empty.")
-
+                    raw_data_frames.append(
+                        df[
+                            [
+                                "EntityName",
+                                "ReportDate",
+                                "Timeframe",
+                                "Category",
+                                "AssetClass",
+                            ]
+                            + req_cols
+                        ]
+                    )
+            except Exception as e:
+                print(f"    [ERROR] YF failed for {ticker} ({interval}): {e}")
             time.sleep(0.5)
 
-    if all_data:
-        master_df = pd.concat(all_data, ignore_index=True)
-        master_df = master_df.where(pd.notnull(master_df), None)
-        return master_df
-    else:
-        return pd.DataFrame()
+    # --- 3. FETCH GLOBAL ASSETS (YF) ---
+    global_assets_df = get_active_global_assets()
+    for _, row in global_assets_df.iterrows():
+        raw_ticker = row["Ticker"]
+        asset_class = row["AssetClass"]
+        exchange = row["Exchange"]
+
+        ticker = raw_ticker
+        if exchange == "NSE" and not ticker.endswith(".NS"):
+            ticker = f"{raw_ticker}.NS"
+        elif exchange == "BSE" and not ticker.endswith(".BO"):
+            ticker = f"{raw_ticker}.BO"
+
+        for interval in intervals:
+            try:
+                print(f" -> YF Asset Fetch: {ticker} ({exchange}) | {interval}...")
+                tick = yf.Ticker(ticker)
+                hist = tick.history(period=get_yf_period(interval), interval=interval)
+
+                if not hist.empty:
+                    df = hist.copy()
+                    df.index = pd.to_datetime(df.index).tz_localize(None)
+                    df.index.name = "ReportDate"
+                    df.reset_index(inplace=True)
+
+                    df["EntityName"] = raw_ticker
+                    df["Timeframe"] = interval
+                    df["Category"] = "ASSET"
+                    df["AssetClass"] = asset_class
+
+                    for col in req_cols:
+                        if col not in df.columns:
+                            df[col] = None
+
+                    raw_data_frames.append(
+                        df[
+                            [
+                                "EntityName",
+                                "ReportDate",
+                                "Timeframe",
+                                "Category",
+                                "AssetClass",
+                            ]
+                            + req_cols
+                        ]
+                    )
+            except Exception as e:
+                print(f"    [ERROR] YF failed for {ticker} ({interval}): {e}")
+            time.sleep(0.5)
+
+    # --- 4. FETCH MACRO (TV) ---
+    try:
+        tv = TvDatafeed()
+        for name, (symbol, exchange) in tv_macro.items():
+            for interval in intervals:
+                if "CPI" in name and interval != "1d":
+                    continue
+
+                try:
+                    print(f" -> TV Macro Fetch: {name} | {interval}...")
+                    tv_data = tv.get_hist(
+                        symbol=symbol,
+                        exchange=exchange,
+                        interval=get_tv_interval(interval),
+                        n_bars=1000,
+                    )
+
+                    if tv_data is not None and not tv_data.empty:
+                        df = tv_data.copy()
+                        df.index = pd.to_datetime(df.index)
+                        df.index.name = "ReportDate"
+                        df.reset_index(inplace=True)
+                        df.rename(
+                            columns={
+                                "open": "Open",
+                                "high": "High",
+                                "low": "Low",
+                                "close": "Close",
+                                "volume": "Volume",
+                            },
+                            inplace=True,
+                        )
+
+                        df["EntityName"] = name
+                        df["Timeframe"] = interval
+                        df["Category"] = "MACRO"
+                        df["AssetClass"] = None
+
+                        for col in req_cols:
+                            if col not in df.columns:
+                                df[col] = None
+
+                        raw_data_frames.append(
+                            df[
+                                [
+                                    "EntityName",
+                                    "ReportDate",
+                                    "Timeframe",
+                                    "Category",
+                                    "AssetClass",
+                                ]
+                                + req_cols
+                            ]
+                        )
+                except Exception as e:
+                    print(f"    [ERROR] TV failed for {symbol} ({interval}): {e}")
+                time.sleep(1)
+    except Exception as e:
+        print(f"    [CRITICAL] TradingView connection failed entirely: {e}")
+
+    # --- 5. SYNTHESIZE YIELD SPREAD ---
+    if raw_data_frames:
+        master_df = pd.concat(raw_data_frames, ignore_index=True)
+        print("\\nCalculating Yield Spreads across timeframes...")
+        spread_frames = []
+
+        for interval in intervals:
+            df_us = master_df[
+                (master_df["EntityName"] == "US_10Y_Yield")
+                & (master_df["Timeframe"] == interval)
+            ].set_index("ReportDate")
+            df_in = master_df[
+                (master_df["EntityName"] == "India_10Y_Yield")
+                & (master_df["Timeframe"] == interval)
+            ].set_index("ReportDate")
+
+            if not df_us.empty and not df_in.empty:
+                aligned = df_in[["Close"]].join(
+                    df_us[["Close"]], rsuffix="_us", how="outer"
+                )
+                aligned.ffill(inplace=True)
+                aligned.dropna(inplace=True)
+
+                spread = aligned["Close"] - aligned["Close_us"]
+                spread_df = spread.to_frame("Close").reset_index()
+
+                spread_df["EntityName"] = "Yield_Spread"
+                spread_df["Timeframe"] = interval
+                spread_df["Category"] = "MACRO"
+                spread_df["AssetClass"] = None
+
+                for col in ["Open", "High", "Low", "Volume"]:
+                    spread_df[col] = None
+                spread_frames.append(spread_df)
+
+        if spread_frames:
+            master_df = pd.concat([master_df] + spread_frames, ignore_index=True)
+
+        return master_df.dropna(subset=["Close"])
+
+    return pd.DataFrame()
 
 
 def push_to_database(df):
-    if df is None or df.empty:
-        print("No data to push.")
-        return
-
-    # Split data based on granularity (Daily vs Intraday)
-    daily_df = df[df["Timeframe"] == "1d"].copy()
-    intraday_df = df[df["Timeframe"] != "1d"].copy()
-
-    # --- 1. Macro Indicators (Daily) ---
-    macro_daily = daily_df[daily_df["Category"] == "MACRO"].copy()
-    if not macro_daily.empty:
-        print(f" -> Pushing {len(macro_daily)} records to macro_daily_ledger...")
-
-        macro_daily = macro_daily[["EntityName", "ReportDate", "Close_Value", "Volume"]]
-        macro_daily.rename(columns={"EntityName": "IndicatorName"}, inplace=True)
-
-        engine.register("temp_macro_daily", macro_daily)
-        engine.execute("""
-            INSERT INTO macro_daily_ledger ("IndicatorName", "ReportDate", "Close_Value", "Volume")
-            SELECT "IndicatorName", CAST("ReportDate" AS DATE), "Close_Value", "Volume" FROM temp_macro_daily
-            ON CONFLICT ("IndicatorName", "ReportDate") DO UPDATE SET 
-                "Close_Value"=EXCLUDED."Close_Value", "Volume"=EXCLUDED."Volume";
-        """)
-        engine.unregister("temp_macro_daily")
-
-    # --- 2. Macro Indicators (Intraday) ---
-    macro_intra = intraday_df[intraday_df["Category"] == "MACRO"].copy()
-    if not macro_intra.empty:
-        print(f" -> Pushing {len(macro_intra)} records to macro_intraday_ledger...")
-
-        macro_intra = macro_intra[
-            [
-                "EntityName",
-                "ReportDate",
-                "ReportTime",
-                "Timeframe",
-                "Close_Value",
-                "Volume",
-            ]
-        ]
-        macro_intra.rename(columns={"EntityName": "IndicatorName"}, inplace=True)
-
-        engine.register("temp_macro_intra", macro_intra)
-        engine.execute("""
-            INSERT INTO macro_intraday_ledger ("IndicatorName", "ReportDate", "ReportTime", "Timeframe", "Close_Value", "Volume")
-            SELECT "IndicatorName", CAST("ReportDate" AS DATE), CAST("ReportTime" AS TIME), "Timeframe", "Close_Value", "Volume" FROM temp_macro_intra
-            ON CONFLICT ("IndicatorName", "ReportDate", "ReportTime", "Timeframe") DO UPDATE SET 
-                "Close_Value"=EXCLUDED."Close_Value", "Volume"=EXCLUDED."Volume";
-        """)
-        engine.unregister("temp_macro_intra")
-
-    # --- 3. Global Assets (Daily) ---
-    asset_daily = daily_df[daily_df["Category"] == "ASSET"].copy()
-    if not asset_daily.empty:
-        print(f" -> Pushing {len(asset_daily)} records to global_assets_daily...")
-
-        asset_daily = asset_daily[
-            ["EntityName", "ReportDate", "Open", "High", "Low", "Close", "Volume"]
-        ]
-        asset_daily.rename(columns={"EntityName": "Ticker"}, inplace=True)
-        asset_daily["AssetClass"] = "Equity"
-
-        engine.register("temp_asset_daily", asset_daily)
-        engine.execute("""
-            INSERT INTO global_assets_daily ("Ticker", "ReportDate", "AssetClass", "Open", "High", "Low", "Close", "Volume")
-            SELECT "Ticker", CAST("ReportDate" AS DATE), "AssetClass", "Open", "High", "Low", "Close", "Volume" FROM temp_asset_daily
-            ON CONFLICT ("Ticker", "ReportDate") DO UPDATE SET 
-                "Open"=EXCLUDED."Open", "High"=EXCLUDED."High", "Low"=EXCLUDED."Low", "Close"=EXCLUDED."Close", "Volume"=EXCLUDED."Volume";
-        """)
-        engine.unregister("temp_asset_daily")
-
-    # --- 4. Global Assets (Intraday) ---
-    asset_intra = intraday_df[intraday_df["Category"] == "ASSET"].copy()
-    if not asset_intra.empty:
-        print(f" -> Pushing {len(asset_intra)} records to global_assets_intraday...")
-
-        asset_intra = asset_intra[
-            [
-                "EntityName",
-                "ReportDate",
-                "Timeframe",
-                "Open",
-                "High",
-                "Low",
-                "Close",
-                "Volume",
-            ]
-        ]
-        asset_intra.rename(columns={"EntityName": "Ticker"}, inplace=True)
-
-        # We need to construct a proper datetime for the intraday table since your schema expects ReportDate to be a full timestamp for intraday
-        # Note: The dataframe currently has separate ReportDate and ReportTime columns created earlier. We'll reconstruct the full timestamp for insertion.
-        # Actually looking at your old schema, the target table only has "ReportDate" which acts as the full timestamp. Let's rebuild it.
-        # We'll fetch the raw index 'datetime' from the TVDatafeed output directly.
-        pass
-
-    print("[SUCCESS] All Macro Pipeline Data Successfully Routed and Upserted.")
-
-
-def push_to_database_fixed(df):
-    """
-    Revised push_to_database to handle timeframes accurately according to the DuckDB schema.
-    """
-    if df is None or df.empty:
-        print("No data to push.")
-        return
+    print("\\nRouting Data to strict Time-Series Architectures...")
 
     daily_df = df[df["Timeframe"] == "1d"].copy()
     intraday_df = df[df["Timeframe"] != "1d"].copy()
 
-    # --- 1. Macro Indicators (Daily) ---
+    # Create safe copies and format dates for DuckDB Casts
+    daily_df["ReportDate"] = pd.to_datetime(daily_df["ReportDate"]).dt.date.astype(str)
+    intraday_df["ReportDate"] = pd.to_datetime(intraday_df["ReportDate"]).dt.strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    daily_df = daily_df.where(pd.notnull(daily_df), None)
+    intraday_df = intraday_df.where(pd.notnull(intraday_df), None)
+
+    # 1. MACRO DAILY LEDGER
     macro_daily = daily_df[daily_df["Category"] == "MACRO"].copy()
     if not macro_daily.empty:
+        macro_daily.rename(
+            columns={"EntityName": "IndicatorName", "Close": "Close_Value"},
+            inplace=True,
+        )
         print(f" -> Pushing {len(macro_daily)} records to macro_daily_ledger...")
-        macro_daily.rename(columns={"EntityName": "IndicatorName"}, inplace=True)
-        engine.register("temp_macro_daily", macro_daily)
-        engine.execute("""
-            INSERT INTO macro_daily_ledger ("IndicatorName", "ReportDate", "Close_Value", "Volume")
-            SELECT "IndicatorName", CAST("ReportDate" AS DATE), "Close_Value", "Volume" FROM temp_macro_daily
-            ON CONFLICT ("IndicatorName", "ReportDate") DO UPDATE SET 
-                "Close_Value"=EXCLUDED."Close_Value", "Volume"=EXCLUDED."Volume";
-        """)
-        engine.unregister("temp_macro_daily")
 
-    # --- 2. Macro Indicators (Intraday) ---
+        # DUCKDB FIX: Native Upsert execution
+        engine.register("temp_md", macro_daily)
+        engine.execute("""
+            INSERT INTO macro_daily_ledger ("IndicatorName", "ReportDate", "Open", "High", "Low", "Close_Value", "Volume")
+            SELECT "IndicatorName", CAST("ReportDate" AS DATE), "Open", "High", "Low", "Close_Value", "Volume" FROM temp_md
+            ON CONFLICT ("IndicatorName", "ReportDate") DO UPDATE SET 
+                "Open"=EXCLUDED."Open", "High"=EXCLUDED."High", "Low"=EXCLUDED."Low", "Close_Value"=EXCLUDED."Close_Value", "Volume"=EXCLUDED."Volume";
+        """)
+        engine.unregister("temp_md")
+
+    # 2. MACRO INTRADAY LEDGER
     macro_intra = intraday_df[intraday_df["Category"] == "MACRO"].copy()
     if not macro_intra.empty:
-        print(f" -> Pushing {len(macro_intra)} records to macro_intraday_ledger...")
-        macro_intra.rename(columns={"EntityName": "IndicatorName"}, inplace=True)
-        engine.register("temp_macro_intra", macro_intra)
-        engine.execute("""
-            INSERT INTO macro_intraday_ledger ("IndicatorName", "ReportDate", "ReportTime", "Timeframe", "Close_Value", "Volume")
-            SELECT "IndicatorName", CAST("ReportDate" AS DATE), CAST("ReportTime" AS TIME), "Timeframe", "Close_Value", "Volume" FROM temp_macro_intra
-            ON CONFLICT ("IndicatorName", "ReportDate", "ReportTime", "Timeframe") DO UPDATE SET 
-                "Close_Value"=EXCLUDED."Close_Value", "Volume"=EXCLUDED."Volume";
-        """)
-        engine.unregister("temp_macro_intra")
-
-    # --- 3. Global Assets (Daily) ---
-    asset_daily = daily_df[daily_df["Category"] == "ASSET"].copy()
-    if not asset_daily.empty:
-        print(f" -> Pushing {len(asset_daily)} records to global_assets_daily...")
-        asset_daily.rename(columns={"EntityName": "Ticker"}, inplace=True)
-        asset_daily["AssetClass"] = "Equity"
-        engine.register("temp_asset_daily", asset_daily)
-        engine.execute("""
-            INSERT INTO global_assets_daily ("Ticker", "ReportDate", "AssetClass", "Open", "High", "Low", "Close", "Volume")
-            SELECT "Ticker", CAST("ReportDate" AS DATE), "AssetClass", "Open", "High", "Low", "Close", "Volume" FROM temp_asset_daily
-            ON CONFLICT ("Ticker", "ReportDate") DO UPDATE SET 
-                "Open"=EXCLUDED."Open", "High"=EXCLUDED."High", "Low"=EXCLUDED."Low", "Close"=EXCLUDED."Close", "Volume"=EXCLUDED."Volume";
-        """)
-        engine.unregister("temp_asset_daily")
-
-    # --- 4. Global Assets (Intraday) ---
-    asset_intra = intraday_df[intraday_df["Category"] == "ASSET"].copy()
-    if not asset_intra.empty:
-        print(f" -> Pushing {len(asset_intra)} records to global_assets_intraday...")
-        asset_intra.rename(columns={"EntityName": "Ticker"}, inplace=True)
-
-        # We need to recreate the full timestamp string for 'ReportDate' in the intraday table since it acts as the primary key
-        # We combine the separated 'ReportDate' and 'ReportTime' back into a single ISO string
-        asset_intra["FullReportDate"] = (
-            asset_intra["ReportDate"] + " " + asset_intra["ReportTime"]
+        macro_intra.rename(
+            columns={"EntityName": "IndicatorName", "Close": "Close_Value"},
+            inplace=True,
         )
 
-        engine.register("temp_asset_intra", asset_intra)
+        print(f" -> Pushing {len(macro_intra)} records to macro_intraday_ledger...")
+        engine.register("temp_mi", macro_intra)
+
+        # FIX: Removed split ReportTime column, using full TIMESTAMP cast for ReportDate
+        engine.execute("""
+            INSERT INTO macro_intraday_ledger ("IndicatorName", "ReportDate", "Timeframe", "Open", "High", "Low", "Close_Value", "Volume")
+            SELECT "IndicatorName", CAST("ReportDate" AS TIMESTAMP), "Timeframe", "Open", "High", "Low", "Close_Value", "Volume" FROM temp_mi
+            ON CONFLICT ("IndicatorName", "ReportDate", "Timeframe") DO UPDATE SET 
+                "Open"=EXCLUDED."Open", "High"=EXCLUDED."High", "Low"=EXCLUDED."Low", "Close_Value"=EXCLUDED."Close_Value", "Volume"=EXCLUDED."Volume";
+        """)
+        engine.unregister("temp_mi")
+
+    # 3. GLOBAL ASSETS DAILY
+    asset_daily = daily_df[daily_df["Category"] == "ASSET"].copy()
+    if not asset_daily.empty:
+        asset_daily.rename(columns={"EntityName": "Ticker"}, inplace=True)
+        print(f" -> Pushing {len(asset_daily)} records to global_assets_daily...")
+
+        engine.register("temp_gd", asset_daily)
+        engine.execute("""
+            INSERT INTO global_assets_daily ("Ticker", "ReportDate", "AssetClass", "Open", "High", "Low", "Close", "Volume")
+            SELECT "Ticker", CAST("ReportDate" AS DATE), "AssetClass", "Open", "High", "Low", "Close", "Volume" FROM temp_gd
+            ON CONFLICT ("Ticker", "ReportDate") DO UPDATE SET 
+                "Open"=EXCLUDED."Open", "High"=EXCLUDED."High", "Low"=EXCLUDED."Low", "Close"=EXCLUDED."Close", "Volume"=EXCLUDED."Volume";
+        """)
+        engine.unregister("temp_gd")
+
+    # 4. GLOBAL ASSETS INTRADAY
+    asset_intra = intraday_df[intraday_df["Category"] == "ASSET"].copy()
+    if not asset_intra.empty:
+        asset_intra.rename(columns={"EntityName": "Ticker"}, inplace=True)
+        print(f" -> Pushing {len(asset_intra)} records to global_assets_intraday...")
+
+        engine.register("temp_gi", asset_intra)
         engine.execute("""
             INSERT INTO global_assets_intraday ("Ticker", "ReportDate", "Timeframe", "Open", "High", "Low", "Close", "Volume")
-            SELECT "Ticker", CAST("FullReportDate" AS TIMESTAMP), "Timeframe", "Open", "High", "Low", "Close", "Volume" FROM temp_asset_intra
+            SELECT "Ticker", CAST("ReportDate" AS TIMESTAMP), "Timeframe", "Open", "High", "Low", "Close", "Volume" FROM temp_gi
             ON CONFLICT ("Ticker", "ReportDate", "Timeframe") DO UPDATE SET 
                 "Open"=EXCLUDED."Open", "High"=EXCLUDED."High", "Low"=EXCLUDED."Low", "Close"=EXCLUDED."Close", "Volume"=EXCLUDED."Volume";
         """)
-        engine.unregister("temp_asset_intra")
+        engine.unregister("temp_gi")
 
     print("[SUCCESS] All Macro Pipeline Data Successfully Routed and Upserted.")
 
@@ -349,8 +408,14 @@ def run_macro_pipeline(period_days=3000):
     final_df = fetch_hybrid_macro_data(
         intervals=target_intervals, period_days=period_days
     )
-    push_to_database_fixed(final_df)
+
+    if not final_df.empty:
+        push_to_database(final_df)
+        return True, len(final_df)
+    else:
+        print("Pipeline aborted: No data extracted.")
+        return False, 0
 
 
 if __name__ == "__main__":
-    run_macro_pipeline(period_days=10)
+    success, rows = run_macro_pipeline()
