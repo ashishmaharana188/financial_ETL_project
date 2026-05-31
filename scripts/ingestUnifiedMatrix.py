@@ -2,11 +2,9 @@ import os
 import glob
 import json
 import zipfile
-import io
-import pandas as pd
-import numpy as np
+import polars as pl
+from datetime import datetime
 from scripts.database import engine
-import io
 import uuid
 import logging
 import re
@@ -19,6 +17,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | FILE: %(file_name)-40s | RAW: %(raw)-8s | DEDUP: %(dedup)-8s | PUSH: %(push)-8s | STATUS: %(status)s",
     datefmt="%Y-%m-%d %H:%M:%S",
+    force=True,
 )
 
 
@@ -35,187 +34,102 @@ def log_audit(file_name, raw, dedup, push, status):
     )
 
 
-def clean_for_db(df):
-
-    # 1. Hunt down and destroy literal text dashes
-    df = df.replace(to_replace=r"^\s*-\s*$", value=np.nan, regex=True)
-
-    # 2. Split numeric columns by their absolute Database type
-    float_cols = [
-        "StrikePrice",
-        "Open",
-        "High",
-        "Low",
-        "Close",
-        "Turnover",
-        "Delivery_Percentage",
-        "Settlement_Price",
-        "Underlying_Price",
-    ]
-
-    int_cols = [
-        "Volume",
-        "No_Of_Trades",
-        "Delivery_Qty",
-        "Short_Volume",
-        "Open_Interest",
-        "Change_In_OI",
-    ]
-
-    # 3. Process Floats (Decimals allowed)
-    for col in float_cols:
-        if col in df.columns:
-            if pd.api.types.is_object_dtype(df[col]) or pd.api.types.is_string_dtype(
-                df[col]
-            ):
-                df[col] = df[col].astype(str).str.replace(",", "", regex=False)
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    # 4. Process Integers (Force exact whole numbers, stripping .0)
-    for col in int_cols:
-        if col in df.columns:
-            if pd.api.types.is_object_dtype(df[col]) or pd.api.types.is_string_dtype(
-                df[col]
-            ):
-                df[col] = df[col].astype(str).str.replace(",", "", regex=False)
-            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
-
-    # 5. Final NaN/Infinity Cleanup
-    df = df.replace([np.inf, -np.inf], np.nan)
-    df = df.where(pd.notnull(df), None)
-
-    # 6. CRITICAL DB FIX: Primary Keys cannot be null. Futures have no StrikePrice.
-    if "StrikePrice" in df.columns:
-        df["StrikePrice"] = df["StrikePrice"].fillna(0.0)
-
-    return df
-
-
-def _safe_load_and_convert_csv(filepath):
-    """
-    Attempts to read a file. If it crashes because the file is an Excel, Zip, or
-    mangled format masking as a .csv, it converts it to a true CSV and overwrites.
-    """
+def _read_csv_safe(file_path_or_bytes):
     try:
-        # Try reading it as a standard CSV first
-        return pd.read_csv(
-            filepath, encoding="utf-8", encoding_errors="replace", on_bad_lines="skip"
+        return pl.read_csv(
+            file_path_or_bytes,
+            encoding="utf8-lossy",
+            ignore_errors=True,
+            infer_schema_length=0,
         )
-    except Exception as read_error:
-        print(
-            f"    [!] Format Error reading {filepath}. Attempting conversion... ({read_error})"
-        )
-
-        # 1. Could it be an Excel file masked as a .csv?
-        try:
-            df = pd.read_excel(filepath)
-            df.to_csv(filepath, index=False, encoding="utf-8")
-            print("    [+] Successfully converted Excel -> CSV")
-            return df
-        except Exception:
-            pass
-
-        # 2. Could it be a Zip file masked as a .csv?
-        import zipfile
-
-        try:
-            if zipfile.is_zipfile(filepath):
-                with zipfile.ZipFile(filepath, "r") as z:
-                    # Find the first valid csv inside the zip
-                    csv_names = [n for n in z.namelist() if n.endswith(".csv")]
-                    if csv_names:
-                        target_name = csv_names[0]
-                        temp_path = os.path.join(
-                            os.path.dirname(filepath), "temp_extracted.csv"
-                        )
-
-                        # Extract, read, and replace the original file
-                        with z.open(target_name) as f:
-                            df = pd.read_csv(
-                                f,
-                                encoding="utf-8",
-                                encoding_errors="replace",
-                                on_bad_lines="skip",
-                            )
-
-                        df.to_csv(filepath, index=False, encoding="utf-8")
-                        print("    [+] Successfully unzipped and replaced -> CSV")
-                        return df
-        except Exception:
-            pass
-
-        # If all conversion attempts fail, return an empty dataframe to skip safely
-        print(f"    [-] FATAL FORMAT: Cannot salvage {filepath}. Skipping.")
-        return pd.DataFrame()
+    except Exception as e:
+        print(f"    [!] Format Error reading {file_path_or_bytes}: {e}")
+        return pl.DataFrame()
 
 
 def parse_cash_and_shorts(cash_file, preloaded_short_df=None):
+    df_cash = _read_csv_safe(cash_file)
+    if df_cash.is_empty():
+        return pl.DataFrame()
 
-    try:
-        # Standard fast-path CSV read
-        df_cash = pd.read_csv(
-            cash_file, encoding="utf-8", encoding_errors="replace", on_bad_lines="skip"
-        )
-    except Exception:
-        df_cash = pd.read_excel(cash_file)
-        df_cash.to_csv(cash_file, index=False, encoding="utf-8")
+    # Standardize columns
+    df_cash = df_cash.rename({c: c.strip().upper() for c in df_cash.columns})
 
-    if df_cash.empty:
-        return pd.DataFrame()
+    # Ensure DATE1 exists
+    if "DATE1" not in df_cash.columns:
+        return pl.DataFrame()
 
-    # 3. Standardize columns
-    df_cash.rename(columns=lambda x: x.strip().upper(), inplace=True)
+    df_cash = df_cash.with_columns(
+        pl.col("DATE1")
+        .str.strip_chars()
+        .str.strptime(pl.Date, format="%d-%b-%Y", strict=False)
+        .alias("ReportDate")
+    ).filter(pl.col("ReportDate").is_not_null())
 
-    df_cash["DATE1"] = df_cash["DATE1"].astype(str).str.strip()
-    df_cash["ReportDate"] = pd.to_datetime(
-        df_cash["DATE1"], format="mixed", dayfirst=True, errors="coerce"
+    rename_map = {
+        "SYMBOL": "Ticker",
+        "SERIES": "Exchange_Series",
+        "OPEN_PRICE": "Open",
+        "HIGH_PRICE": "High",
+        "LOW_PRICE": "Low",
+        "CLOSE_PRICE": "Close",
+        "TTL_TRD_QNTY": "Volume",
+        "TURNOVER_LACS": "Turnover",
+        "NO_OF_TRADES": "No_Of_Trades",
+        "DELIV_QTY": "Delivery_Qty",
+        "DELIV_PER": "Delivery_Percentage",
+    }
+
+    df_cash = df_cash.select(
+        [
+            pl.col(old).alias(new)
+            for old, new in rename_map.items()
+            if old in df_cash.columns
+        ]
+        + [pl.col("ReportDate")]
     )
-    df_cash = df_cash.dropna(subset=["ReportDate"])
 
-    df_cash = df_cash.rename(
-        columns={
-            "SYMBOL": "Ticker",
-            "SERIES": "Exchange_Series",
-            "OPEN_PRICE": "Open",
-            "HIGH_PRICE": "High",
-            "LOW_PRICE": "Low",
-            "CLOSE_PRICE": "Close",
-            "TTL_TRD_QNTY": "Volume",
-            "TURNOVER_LACS": "Turnover",
-            "NO_OF_TRADES": "No_Of_Trades",
-            "DELIV_QTY": "Delivery_Qty",
-            "DELIV_PER": "Delivery_Percentage",
-        }
+    df_cash = df_cash.with_columns(
+        [
+            pl.lit("CASH").alias("InstrumentType"),
+            pl.lit(datetime(2099, 12, 31).date()).alias("ExpiryDate"),
+            pl.lit(0.0).alias("StrikePrice"),
+        ]
     )
 
-    df_cash["InstrumentType"] = "CASH"
-    df_cash["ExpiryDate"] = pd.to_datetime("2099-12-31").date()
-    df_cash["StrikePrice"] = 0.0
-
-    # 4. Merge Shorts
-    if preloaded_short_df is not None and not preloaded_short_df.empty:
-        df_cash = pd.merge(
-            df_cash,
-            preloaded_short_df[["ReportDate", "Ticker", "Short_Volume"]],
+    if preloaded_short_df is not None and not preloaded_short_df.is_empty():
+        df_cash = df_cash.join(
+            preloaded_short_df.select(["ReportDate", "Ticker", "Short_Volume"]),
             on=["ReportDate", "Ticker"],
             how="left",
         )
     else:
-        df_cash["Short_Volume"] = None
+        df_cash = df_cash.with_columns(
+            pl.lit(None).cast(pl.Int64).alias("Short_Volume")
+        )
 
     return df_cash
 
 
 def parse_modern_fo_df(df):
-    df.rename(columns=lambda x: x.strip(), inplace=True)
+    df = df.rename({c: c.strip() for c in df.columns})
 
-    df["TradDt"] = df["TradDt"].astype(str).str.strip()
-    df["XpryDt"] = df["XpryDt"].astype(str).str.strip()
+    if "TradDt" not in df.columns or "XpryDt" not in df.columns:
+        return pl.DataFrame()
 
-    df["ReportDate"] = pd.to_datetime(df["TradDt"])
-    df["ExpiryDate"] = pd.to_datetime(df["XpryDt"]).dt.date
+    df = df.with_columns(
+        [
+            pl.col("TradDt")
+            .str.strip_chars()
+            .str.strptime(pl.Date, format="%d-%b-%Y", strict=False)
+            .alias("ReportDate"),
+            pl.col("XpryDt")
+            .str.strip_chars()
+            .str.strptime(pl.Date, format="%d-%b-%Y", strict=False)
+            .alias("ExpiryDate"),
+        ]
+    )
 
-    # Use FinInstrmTp (Type) instead of FinInstrmNm (Name/Trading Symbol)
     col_mapping = {
         "TckrSymb": "Ticker",
         "FinInstrmTp": "InstrumentType",
@@ -234,56 +148,77 @@ def parse_modern_fo_df(df):
         "UndrlygPric": "Underlying_Price",
     }
 
-    # Only rename columns that actually exist to avoid KeyErrors
-    df = df.rename(columns={k: v for k, v in col_mapping.items() if k in df.columns})
+    cols_to_select = [
+        pl.col(k).alias(v) for k, v in col_mapping.items() if k in df.columns
+    ] + [pl.col("ReportDate"), pl.col("ExpiryDate")]
+    df = df.select(cols_to_select)
 
-    # Fallback just in case NSE mangled the headers on a specific day
     if "InstrumentType" not in df.columns and "FinInstrmNm" in df.columns:
-        df["InstrumentType"] = df["FinInstrmNm"].astype(str).str[:20]
+        df = df.with_columns(
+            pl.col("FinInstrmNm").str.slice(0, 20).alias("InstrumentType")
+        )
 
     return df
 
 
 def parse_legacy_fo_df(df):
-    df.rename(columns=lambda x: x.strip().upper(), inplace=True)
+    df = df.rename({c: c.strip().upper() for c in df.columns})
 
-    # FIX: Strip hidden spaces
-    df["TIMESTAMP"] = df["TIMESTAMP"].astype(str).str.strip()
-    df["EXPIRY_DT"] = df["EXPIRY_DT"].astype(str).str.strip()
+    if "TIMESTAMP" not in df.columns or "EXPIRY_DT" not in df.columns:
+        return pl.DataFrame()
 
-    df["ReportDate"] = pd.to_datetime(df["TIMESTAMP"], format="%d-%b-%Y")
-    df["ExpiryDate"] = pd.to_datetime(df["EXPIRY_DT"], format="%d-%b-%Y").dt.date
-
-    df = df.rename(
-        columns={
-            "SYMBOL": "Ticker",
-            "INSTRUMENT": "InstrumentType",
-            "STRIKE_PR": "StrikePrice",
-            "OPTION_TYP": "OptionType",
-            "OPEN": "Open",
-            "HIGH": "High",
-            "LOW": "Low",
-            "CLOSE": "Close",
-            "CONTRACTS": "Volume",
-            "VAL_INLAKH": "Turnover",
-            "OPEN_INT": "Open_Interest",
-            "CHG_IN_OI": "Change_In_OI",
-            "SETTLE_PR": "Settlement_Price",
-        }
+    df = df.with_columns(
+        [
+            pl.col("TIMESTAMP")
+            .str.strip_chars()
+            .str.strptime(pl.Date, format="%d-%b-%Y", strict=False)
+            .alias("ReportDate"),
+            pl.col("EXPIRY_DT")
+            .str.strip_chars()
+            .str.strptime(pl.Date, format="%d-%b-%Y", strict=False)
+            .alias("ExpiryDate"),
+        ]
     )
 
-    df["OptionType"] = df["OptionType"].replace("XX", None)
+    rename_map = {
+        "SYMBOL": "Ticker",
+        "INSTRUMENT": "InstrumentType",
+        "STRIKE_PR": "StrikePrice",
+        "OPTION_TYP": "OptionType",
+        "OPEN": "Open",
+        "HIGH": "High",
+        "LOW": "Low",
+        "CLOSE": "Close",
+        "CONTRACTS": "Volume",
+        "VAL_INLAKH": "Turnover",
+        "OPEN_INT": "Open_Interest",
+        "CHG_IN_OI": "Change_In_OI",
+        "SETTLE_PR": "Settlement_Price",
+    }
+
+    cols_to_select = [
+        pl.col(k).alias(v) for k, v in rename_map.items() if k in df.columns
+    ] + [pl.col("ReportDate"), pl.col("ExpiryDate")]
+    df = df.select(cols_to_select)
+
+    if "OptionType" in df.columns:
+        df = df.with_columns(
+            pl.when(pl.col("OptionType") == "XX")
+            .then(None)
+            .otherwise(pl.col("OptionType"))
+            .alias("OptionType")
+        )
+
     return df
 
 
 def parse_mcx(file_path):
-    with open(file_path, "r") as f:
-        try:
+    try:
+        with open(file_path, "r") as f:
             data = json.load(f)
-        except json.JSONDecodeError:
-            return pd.DataFrame()  # File is corrupt or empty
+    except Exception:
+        return pl.DataFrame()
 
-    # Handle if JSON is wrapped in a dict
     if isinstance(data, dict):
         if "d" in data and isinstance(data["d"], dict) and "Data" in data["d"]:
             data = data["d"]["Data"]
@@ -294,55 +229,64 @@ def parse_mcx(file_path):
         else:
             data = [data]
 
-    df = pd.DataFrame(data)
+    if not data:
+        return pl.DataFrame()
 
-    # Safely abort if the file generated zero rows/columns
-    if df.empty:
-        return pd.DataFrame()
+    df = pl.DataFrame(data)
+    if df.is_empty():
+        return pl.DataFrame()
 
-    df.columns = df.columns.str.strip()
+    df = df.rename({c: c.strip() for c in df.columns})
 
-    # Safely abort if it's missing the expected Date key
     if "Date" not in df.columns:
         if "date" in df.columns:
-            df.rename(columns={"date": "Date"}, inplace=True)
+            df = df.rename({"date": "Date"})
         else:
-            return pd.DataFrame()
+            return pl.DataFrame()
 
-    df["ReportDate"] = pd.to_datetime(df["Date"])
-    df["ExpiryDate"] = pd.to_datetime(
-        df["ExpiryDate"], format="mixed", errors="coerce"
-    ).dt.date
+    # Parse Dates
+    df = df.with_columns(
+        [
+            pl.col("Date")
+            .str.strptime(pl.Date, format="%d-%b-%Y", strict=False)
+            .alias("ReportDate"),
+            pl.col("ExpiryDate")
+            .str.strptime(pl.Date, format="%d-%b-%Y", strict=False)
+            .alias("ExpiryDate"),
+        ]
+    )
 
-    df = df.rename(
-        columns={
-            "Symbol": "Ticker",
-            "InstrumentName": "InstrumentType",
-            "StrikePrice": "StrikePrice",
-            "OptionType": "OptionType",
-            "Open": "Open",
-            "High": "High",
-            "Low": "Low",
-            "Close": "Close",
-            "Volume": "Volume",
-            "Value": "Turnover",
-            "OpenInterest": "Open_Interest",
-        }
+    rename_map = {
+        "Symbol": "Ticker",
+        "InstrumentName": "InstrumentType",
+        "StrikePrice": "StrikePrice",
+        "OptionType": "OptionType",
+        "Open": "Open",
+        "High": "High",
+        "Low": "Low",
+        "Close": "Close",
+        "Volume": "Volume",
+        "Value": "Turnover",
+        "OpenInterest": "Open_Interest",
+    }
+
+    df = df.select(
+        [pl.col(k).alias(v) for k, v in rename_map.items() if k in df.columns]
+        + [pl.col("ReportDate"), pl.col("ExpiryDate")]
     )
 
     if "StrikePrice" in df.columns:
-        df["StrikePrice"] = df["StrikePrice"].fillna(0.0)
+        df = df.with_columns(pl.col("StrikePrice").fill_null("0.0"))
 
     return df
 
 
 def push_chunk_to_db(df, file_name="Unknown_File"):
-    """Bypasses CSV serialization. Uses DuckDB Zero-Copy registration with inline SQL trimming."""
-    if df.empty:
+    if df.is_empty():
         log_audit(file_name, 0, 0, 0, "SKIPPED_EMPTY")
         return
 
-    raw_count = len(df)
+    raw_count = df.height
 
     final_columns = [
         "Ticker",
@@ -368,12 +312,66 @@ def push_chunk_to_db(df, file_name="Unknown_File"):
         "Underlying_Price",
     ]
 
+    # Add missing columns as null
     for col in final_columns:
         if col not in df.columns:
-            df[col] = None
+            df = df.with_columns(pl.lit(None).alias(col))
 
-    df = df[final_columns]
-    df = clean_for_db(df)
+    df = df.select(final_columns)
+
+    # Clean empty strings and dashes
+    df = df.with_columns(
+        [
+            pl.when(pl.col(pl.Utf8).str.strip_chars() == "-")
+            .then(None)
+            .otherwise(pl.col(pl.Utf8))
+            .keep_name()
+        ]
+    )
+
+    # Cast Floats
+    float_cols = [
+        "StrikePrice",
+        "Open",
+        "High",
+        "Low",
+        "Close",
+        "Turnover",
+        "Delivery_Percentage",
+        "Settlement_Price",
+        "Underlying_Price",
+    ]
+    df = df.with_columns(
+        [
+            pl.col(c)
+            .cast(pl.Utf8)
+            .str.replace_all(",", "")
+            .cast(pl.Float64, strict=False)
+            for c in float_cols
+            if c in df.columns
+        ]
+    )
+
+    # Cast Ints
+    int_cols = [
+        "Volume",
+        "No_Of_Trades",
+        "Delivery_Qty",
+        "Short_Volume",
+        "Open_Interest",
+        "Change_In_OI",
+    ]
+    df = df.with_columns(
+        [
+            pl.col(c)
+            .cast(pl.Utf8)
+            .str.replace_all(",", "")
+            .str.replace_all(r"\.0$", "")
+            .cast(pl.Int64, strict=False)
+            for c in int_cols
+            if c in df.columns
+        ]
+    )
 
     # Standardize Nulls for Composite Keys
     pk_cols = [
@@ -385,21 +383,27 @@ def push_chunk_to_db(df, file_name="Unknown_File"):
         "OptionType",
         "Exchange_Series",
     ]
-    df["OptionType"] = df["OptionType"].fillna("XX")
-    df["Exchange_Series"] = df["Exchange_Series"].fillna("XX")
-    df["StrikePrice"] = df["StrikePrice"].fillna(0.0)
+    df = df.with_columns(
+        [
+            pl.col("OptionType").fill_null("XX"),
+            pl.col("Exchange_Series").fill_null("XX"),
+            pl.col("StrikePrice").fill_null(0.0),
+        ]
+    )
 
-    df = df.drop_duplicates(subset=pk_cols, keep="last")
-    dedup_count = len(df)
+    # Needs Date objects not null for PK
+    df = df.filter(pl.col("ReportDate").is_not_null())
 
-    print(f"    -> [BULK PUSH] Zero-Copy Native Upsert for {len(df)} rows...")
+    df = df.unique(subset=pk_cols, keep="last")
+    dedup_count = df.height
 
-    # 1. Register Pandas DataFrame directly into DuckDB's C++ Memory Space
+    print(f"    -> [BULK PUSH] Zero-Copy Native Upsert for {dedup_count} rows...")
+
     temp_view = f"temp_master_{uuid.uuid4().hex[:8]}"
-    engine.register(temp_view, df)
-
     try:
-        # 2. Build the SELECT projection to apply TRIM() at C++ speed natively
+        arrow_table = df.to_arrow()
+        engine.register(temp_view, arrow_table)
+
         select_cols = []
         for col in final_columns:
             if col in ["Ticker", "InstrumentType", "OptionType", "Exchange_Series"]:
@@ -417,7 +421,6 @@ def push_chunk_to_db(df, file_name="Unknown_File"):
             ]
         )
 
-        # 3. Execute Upsert with Inline Transformation
         upsert_query = f"""
             INSERT INTO unified_market_master ({insert_cols})
             SELECT {select_clause} FROM {temp_view}
@@ -434,12 +437,14 @@ def push_chunk_to_db(df, file_name="Unknown_File"):
         print(f"    [-] CRITICAL Bulk Push Error: {e}")
 
     finally:
-        # 4. Clean up RAM footprint
-        engine.unregister(temp_view)
+        try:
+            engine.unregister(temp_view)
+        except:
+            pass
 
 
 def execute_pipeline(start_date_str="1900-01-01"):
-    resume_date = pd.to_datetime(start_date_str).date()
+    resume_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
 
     cash_files = glob.glob(os.path.join(CACHE_DIR, "nse_cash_*.csv"))
     short_files = glob.glob(os.path.join(CACHE_DIR, "nse_short_selling_*.csv"))
@@ -459,66 +464,50 @@ def execute_pipeline(start_date_str="1900-01-01"):
         match = re.search(r"(\d{8})", filepath)
         if match:
             date_str = match.group(1)
-
-            # 1. Try DDMMYYYY (NSE Standard)
-            dt = pd.to_datetime(date_str, format="%d%m%Y", errors="coerce")
-
-            # 2. If it fails (returns NaT), fallback to YYYYMMDD (MCX Standard)
-            if pd.isnull(dt):
-                dt = pd.to_datetime(date_str, format="%Y%m%d", errors="coerce")
-
-            # 3. If a valid date was found, return it
-            if pd.notnull(dt):
-                return dt.date()
-
-        return pd.to_datetime("1900-01-01").date()
+            try:
+                return datetime.strptime(date_str, "%d%m%Y").date()
+            except ValueError:
+                try:
+                    return datetime.strptime(date_str, "%Y%m%d").date()
+                except ValueError:
+                    pass
+        return datetime.strptime("1900-01-01", "%Y-%m-%d").date()
 
     cash_files = sorted(cash_files, key=extract_date)
     fo_zips = sorted(fo_zips, key=extract_date)
     mcx_files = sorted(mcx_files, key=extract_date)
 
-    # --- PRE-LOAD SHORT DATA INTO RAM ---
     global_short_df = None
     if short_files:
         print("[*] Pre-loading Master Short Selling Inventory into RAM...")
-        df_short = pd.read_csv(
-            short_files[0],
-            encoding="utf-8",
-            encoding_errors="replace",
-            on_bad_lines="skip",
-        )
-        df_short.rename(columns=lambda x: x.strip(), inplace=True)
-        df_short["Date"] = df_short["Date"].astype(str).str.strip()
-        df_short["ReportDate"] = pd.to_datetime(
-            df_short["Date"], format="mixed", dayfirst=True, errors="coerce"
-        )
-        df_short = df_short.dropna(subset=["ReportDate"])
-        global_short_df = df_short.rename(
-            columns={"Symbol": "Ticker", "Quantity": "Short_Volume"}
-        )
+        df_short = _read_csv_safe(short_files[0])
+        if not df_short.is_empty():
+            df_short = df_short.rename({c: c.strip() for c in df_short.columns})
+            if "Date" in df_short.columns:
+                df_short = df_short.with_columns(
+                    pl.col("Date")
+                    .str.strip_chars()
+                    .str.strptime(pl.Date, format="%d-%m-%Y", strict=False)
+                    .alias("ReportDate")
+                ).filter(pl.col("ReportDate").is_not_null())
+
+                global_short_df = df_short.rename(
+                    {"Symbol": "Ticker", "Quantity": "Short_Volume"}
+                )
 
     # 1. PARSE CASH & SHORT SELLING
     for idx, cash_file in enumerate(cash_files, 1):
-        file_date = extract_date(cash_file)
-
-        # INCREMENTAL SKIP LOGIC
-        if file_date < resume_date:
+        if extract_date(cash_file) < resume_date:
             continue
-
         print(
             f"[*] Parsing Cash [ {idx} / {total_cash} ] : {os.path.basename(cash_file)}"
         )
-        # Pass the pre-loaded RAM object here instead of a filepath
-        df = parse_cash_and_shorts(cash_file, global_short_df)
-        push_chunk_to_db(df, cash_file)
+        push_chunk_to_db(parse_cash_and_shorts(cash_file, global_short_df), cash_file)
 
     # 2. PARSE F&O
     for idx, z_path in enumerate(fo_zips, 1):
-        file_date = extract_date(z_path)
-
-        if file_date < resume_date:
+        if extract_date(z_path) < resume_date:
             continue
-
         print(
             f"[*] Parsing F&O Zip [ {idx} / {total_fo} ] : {os.path.basename(z_path)}"
         )
@@ -529,33 +518,21 @@ def execute_pipeline(start_date_str="1900-01-01"):
                         ".csv"
                     ):
                         with z.open(file_name) as f:
-                            df = pd.read_csv(
-                                f,
-                                encoding="utf-8",
-                                encoding_errors="replace",
-                                on_bad_lines="skip",
+                            push_chunk_to_db(
+                                parse_modern_fo_df(_read_csv_safe(f.read())), file_name
                             )
-                            push_chunk_to_db(parse_modern_fo_df(df), file_name)
-
                     elif file_name.startswith("fo") and file_name.endswith("bhav.csv"):
                         with z.open(file_name) as f:
-                            df = pd.read_csv(
-                                f,
-                                encoding="utf-8",
-                                encoding_errors="replace",
-                                on_bad_lines="skip",
+                            push_chunk_to_db(
+                                parse_legacy_fo_df(_read_csv_safe(f.read())), file_name
                             )
-                            push_chunk_to_db(parse_legacy_fo_df(df), file_name)
         except zipfile.BadZipFile:
             print(f"    [-] Corrupted Zip File skipped: {z_path}")
 
     # 3. PARSE MCX
     for idx, mcx_file in enumerate(mcx_files, 1):
-        file_date = extract_date(mcx_file)
-
-        if file_date < resume_date:
+        if extract_date(mcx_file) < resume_date:
             continue
-
         print(f"[*] Parsing MCX [ {idx} / {total_mcx} ] : {os.path.basename(mcx_file)}")
         push_chunk_to_db(parse_mcx(mcx_file), mcx_file)
 
@@ -568,5 +545,4 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", type=str, default="1900-01-01")
     args = parser.parse_args()
-
     execute_pipeline(args.start)

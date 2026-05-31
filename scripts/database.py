@@ -2,6 +2,8 @@ import duckdb
 import os
 import sys
 from datetime import datetime, timedelta
+import polars as pl
+from contextlib import contextmanager
 
 DB_PATH = "market_data.duckdb"
 
@@ -19,11 +21,9 @@ class DuckDBEngineProxy:
     def __init__(self):
         self.db_path = DB_PATH
         main_script = os.path.basename(sys.argv[0])
-        # Dashboard is strictly read-only so it never locks the DB
         self.default_read_only = "dashboard.py" in main_script or "UI" in main_script
 
     def execute(self, query_string, params=None):
-        # THE FIX: If we have an active write connection (from a .register() block), route through it!
         is_active_writer = hasattr(self, "_active_write_con")
         con = (
             self._active_write_con
@@ -33,21 +33,18 @@ class DuckDBEngineProxy:
 
         try:
             if params:
-                res = con.execute(query_string, params).df()
+                res = con.execute(query_string, params).arrow()
             else:
                 res = con.execute(query_string).df()
             return DuckDBResultContainer(res)
         finally:
-            # Only close the connection automatically if it was a temporary read/write checkout.
-            # Writers bound by .register() are closed explicitly by .unregister().
+
             if not is_active_writer:
                 con.close()
 
     def register(self, view_name, df):
-        # Temporarily upgrade to write-mode for ingestion
         self.default_read_only = False
 
-        # If a write connection doesn't exist yet, open one
         if not hasattr(self, "_active_write_con"):
             self._active_write_con = duckdb.connect(
                 database=self.db_path, read_only=False
@@ -55,6 +52,26 @@ class DuckDBEngineProxy:
             self._active_write_con.execute("INSTALL json; LOAD json;")
 
         self._active_write_con.register(view_name, df)
+
+    @contextmanager
+    def stream_lazy(self, query_string, params=None):
+        """Yields an out-of-core PyArrow RecordBatchReader natively across all sessions."""
+        is_active_writer = hasattr(self, "_active_write_con")
+        con = (
+            self._active_write_con
+            if is_active_writer
+            else get_db_connection(read_only=self.default_read_only)
+        )
+        try:
+            if params:
+                # Update to the correct API method
+                reader = con.execute(query_string, params).to_arrow_reader()
+            else:
+                reader = con.execute(query_string).to_arrow_reader()
+            yield reader
+        finally:
+            if not is_active_writer:
+                con.close()
 
     def unregister(self, view_name):
         if hasattr(self, "_active_write_con"):
@@ -66,17 +83,34 @@ class DuckDBEngineProxy:
 
 
 class DuckDBResultContainer:
-    def __init__(self, dataframe):
-        self._df = dataframe
+    """Wraps zero-copy Apache Arrow tables to prevent memory leaks during OLAP querying."""
+
+    def __init__(self, arrow_table):
+        self._arrow = arrow_table
+
+    def arrow(self):
+        """Returns the raw zero-copy PyArrow Table."""
+        return self._arrow
+
+    def pl(self):
+        """Zero-copy execution. Streams C++ memory directly into Rust/Polars."""
+
+        return pl.from_arrow(self._arrow)
 
     def df(self):
-        return self._df
+        """Legacy fallback. Forces Python RAM materialization (Use carefully)."""
+        return self._arrow.to_pandas()
 
     def fetchone(self):
-        return tuple(self._df.iloc[0]) if not self._df.empty else None
+        """Efficient scalar fetch without materializing the whole column."""
+        if self._arrow.num_rows == 0:
+            return None
+        # .slice(0, 1) guarantees we only read a single row into Python space
+        return tuple(self._arrow.slice(0, 1).to_pylist()[0].values())
 
     def fetchall(self):
-        return [tuple(x) for x in self._df.to_numpy()]
+        """Materializes all rows into native Python tuples."""
+        return [tuple(row.values()) for row in self._arrow.to_pylist()]
 
 
 # The global engine used by all your scripts

@@ -1,16 +1,12 @@
 import os
 import glob
-import pandas as pd
-import numpy as np
+import polars as pl
 from datetime import datetime
 from scripts.database import engine
 import re
-import io
-import uuid
 import logging
 
 CACHE_DIR = "offline_data_cache/master_archives"
-
 
 # Route to the shared ingestion audit log
 logging.basicConfig(
@@ -35,94 +31,68 @@ def log_audit(file_name, raw, dedup, push, status):
     )
 
 
-def clean_for_db(df):
-    df = df.replace([np.inf, -np.inf], np.nan)
-    df = df.where(pd.notnull(df), None)
-    return df
-
-
-def parse_trade_events(file_path, event_type):
-    df = pd.read_csv(file_path, encoding="latin1")
-    df.columns = (
-        df.columns.str.replace("ï»¿", "", regex=False)
-        .str.replace("\ufeff", "", regex=False)
-        .str.strip()
-    )
-    if df.empty:
-        return pd.DataFrame()
-
-    df["ReportDate"] = pd.to_datetime(df["Date"], format="%d-%b-%Y", errors="coerce")
-    df = df.dropna(subset=["ReportDate"])
-    df["EventType"] = event_type
-
-    df["Quantity Traded"] = (
-        df["Quantity Traded"].astype(str).str.replace(",", "", regex=False)
-    )
-    df["Quantity Traded"] = pd.to_numeric(df["Quantity Traded"], errors="coerce")
-
-    price_col = "Trade Price / Wght. Avg. Price"
-    if price_col not in df.columns:
-        price_col = "Trade Price / Wght. Avg. Price "
-
-    if price_col in df.columns:
-        df[price_col] = df[price_col].astype(str).str.replace(",", "", regex=False)
-        df["TradePrice"] = pd.to_numeric(df[price_col], errors="coerce")
-    else:
-        df["TradePrice"] = None
-
-    df = df.rename(
-        columns={
-            "Symbol": "Ticker",
-            "Security Name": "SecurityName",
-            "Client Name": "ClientName",
-            "Buy / Sell": "TransactionType",
-            "Quantity Traded": "Quantity",
-            "Remarks": "Remarks",
-        }
-    )
-    return df
-
-
-def push_chunk_to_db(df, file_name):
-    raw_count = len(df)
-
-    # Register zero-copy DataFrame in DuckDB
-    engine.register("temp_events", df)
-
-    print(
-        f"\\n[DB PUSH] Upserting {raw_count} rows from {file_name} into 'trade_events_ledger'..."
-    )
-
+def parse_trade_events(file_path: str, event_type: str) -> pl.DataFrame:
     try:
-        # Native DuckDB Insert or Ignore
-        # Bypasses existing duplicates based on the UNIQUE constraint defined in database.py
-        engine.execute("""
-            INSERT OR IGNORE INTO trade_events_ledger (
-                "ReportDate", "Ticker", "EventType", "SecurityName", 
-                "ClientName", "TransactionType", "Quantity", "TradePrice", "Remarks"
-            )
-            SELECT 
-                "ReportDate", "Ticker", "EventType", "SecurityName", 
-                "ClientName", "TransactionType", "Quantity", "TradePrice", "Remarks"
-            FROM temp_events;
-        """)
-
-        # Cleanup
-        engine.unregister("temp_events")
-
-        log_audit(file_name, raw_count, raw_count, raw_count, "SUCCESS")
-        print(f"  [+] Success.")
-
+        # Multi-threaded CSV parsing, explicitly ignoring bad lines natively
+        # Using infer_schema_length=0 to prevent type-cast crashes on dirty rows
+        df = pl.read_csv(
+            file_path, encoding="utf8-lossy", ignore_errors=True, infer_schema_length=0
+        )
     except Exception as e:
-        error_msg = str(e).replace("\\n", " ")[:80]
-        log_audit(file_name, raw_count, raw_count, 0, f"FAILED: {error_msg}")
-        print(f"  [X] Failed: {error_msg}")
-        engine.unregister("temp_events")
+        print(f"Error reading {file_path}: {e}")
+        return pl.DataFrame()
+
+    if df.is_empty():
+        return pl.DataFrame()
+
+    # Map the dirty column names to our clean schema
+    rename_map = {
+        "Date": "ReportDate",
+        "Symbol": "Ticker",
+        "Security Name": "SecurityName",
+        "Client Name": "ClientName",
+        "Buy / Sell": "TransactionType",
+        "Quantity Traded": "Quantity",
+    }
+
+    # Identify price column variant
+    price_col = (
+        "Trade Price / Wght. Avg. Price"
+        if "Trade Price / Wght. Avg. Price" in df.columns
+        else "Trade Price"
+    )
+    rename_map[price_col] = "TradePrice"
+
+    # Filter columns to only what we need, rename them
+    df = df.select(
+        [pl.col(old).alias(new) for old, new in rename_map.items() if old in df.columns]
+    )
+
+    # Vectorized Casts & Date Parsing
+    df = df.with_columns(
+        [
+            pl.col("ReportDate").str.strptime(pl.Date, format="%d-%b-%Y", strict=False),
+            pl.col("Quantity").str.replace_all(",", "").cast(pl.Int64, strict=False),
+            pl.col("TradePrice")
+            .str.replace_all(",", "")
+            .cast(pl.Float64, strict=False),
+            pl.lit(event_type).alias("EventType"),
+            pl.lit(None).cast(pl.Utf8).alias("Remarks"),
+        ]
+    )
+
+    # Drop Invalid rows
+    df = df.filter(
+        pl.col("ReportDate").is_not_null()
+        & pl.col("Ticker").is_not_null()
+        & pl.col("Quantity").is_not_null()
+    )
+
+    return df
 
 
 def execute_events_pipeline(start_date_str="1900-01-01"):
-
-    resume_date = pd.to_datetime(start_date_str).date()
+    resume_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
 
     bulk_files = glob.glob(os.path.join(CACHE_DIR, "nse_bulk_deals_*.csv"))
     block_files = glob.glob(os.path.join(CACHE_DIR, "nse_block_deals_*.csv"))
@@ -136,10 +106,11 @@ def execute_events_pipeline(start_date_str="1900-01-01"):
         """Looks for the end date in names like: nse_bulk_deals_09-05-2026_to_20-05-2026.csv"""
         match = re.search(r"_to_(\d{2}-\d{2}-\d{4})\.csv", filepath)
         if match:
-            return pd.to_datetime(
-                match.group(1), format="%d-%m-%Y", errors="coerce"
-            ).date()
-        return pd.to_datetime("2099-12-31").date()
+            try:
+                return datetime.strptime(match.group(1), "%d-%m-%Y").date()
+            except ValueError:
+                pass
+        return datetime.strptime("2099-12-31", "%Y-%m-%d").date()
 
     all_dataframes = []
 
@@ -152,9 +123,9 @@ def execute_events_pipeline(start_date_str="1900-01-01"):
             f"[*] Parsing Bulk Deal [ {idx} / {len(bulk_files)} ] : {os.path.basename(file)}"
         )
         parsed_df = parse_trade_events(file, "Bulk Deal")
-        if not parsed_df.empty:
+        if not parsed_df.is_empty():
             all_dataframes.append(parsed_df)
-            log_audit(file, len(parsed_df), len(parsed_df), 0, "PARSED_IN_MEMORY")
+            log_audit(file, parsed_df.height, parsed_df.height, 0, "PARSED_IN_MEMORY")
         else:
             log_audit(file, 0, 0, 0, "SKIPPED_EMPTY")
 
@@ -167,9 +138,9 @@ def execute_events_pipeline(start_date_str="1900-01-01"):
             f"[*] Parsing Block Deal [ {idx} / {len(block_files)} ] : {os.path.basename(file)}"
         )
         parsed_df = parse_trade_events(file, "Block Deal")
-        if not parsed_df.empty:
+        if not parsed_df.is_empty():
             all_dataframes.append(parsed_df)
-            log_audit(file, len(parsed_df), len(parsed_df), 0, "PARSED_IN_MEMORY")
+            log_audit(file, parsed_df.height, parsed_df.height, 0, "PARSED_IN_MEMORY")
         else:
             log_audit(file, 0, 0, 0, "SKIPPED_EMPTY")
 
@@ -177,17 +148,54 @@ def execute_events_pipeline(start_date_str="1900-01-01"):
         print("  No new trade events to process. DB is up to date.")
         return
 
-    master_events_df = pd.concat(all_dataframes, ignore_index=True)
-    master_events_df = master_events_df[
-        master_events_df["ReportDate"].dt.date >= resume_date
-    ]
+    # Zero-copy Vertical Concat in Polars
+    master_events_df = pl.concat(all_dataframes, how="vertical")
 
-    if master_events_df.empty:
+    # Filter by date
+    master_events_df = master_events_df.filter(pl.col("ReportDate") >= resume_date)
+
+    if master_events_df.is_empty():
         print("  All parsed events are older than the resume checkpoint.")
         return
 
-    push_chunk_to_db(master_events_df, "Batch_Events_Concat")
-    print("[SUCCESS] Trade Events Ledger Update Complete.")
+    print(f"[*] Deduping {master_events_df.height} Trade Events in memory...")
+    raw_count = master_events_df.height
+
+    # Polars Native Unique
+    master_events_df = master_events_df.unique(
+        subset=[
+            "ReportDate",
+            "Ticker",
+            "ClientName",
+            "TransactionType",
+            "Quantity",
+            "TradePrice",
+        ]
+    )
+    dedup_count = master_events_df.height
+
+    # Push to DuckDB via Zero-Copy Arrow
+    print(f"[*] Pushing {dedup_count} deduped trade events to DuckDB...")
+    try:
+        arrow_table = master_events_df.to_arrow()
+        engine.register("temp_events", arrow_table)
+
+        engine.execute("""
+            INSERT INTO trade_events_ledger ("ReportDate", "Ticker", "EventType", "SecurityName", "ClientName", "TransactionType", "Quantity", "TradePrice", "Remarks")
+            SELECT "ReportDate", "Ticker", "EventType", "SecurityName", "ClientName", "TransactionType", "Quantity", "TradePrice", "Remarks"
+            FROM temp_events
+            ON CONFLICT ("ReportDate", "Ticker", "ClientName", "TransactionType", "Quantity", "TradePrice") 
+            DO NOTHING;
+        """)
+        engine.unregister("temp_events")
+        log_audit("Batch_Events_Concat", raw_count, dedup_count, dedup_count, "SUCCESS")
+        print("[SUCCESS] Trade Events Ledger Update Complete.")
+    except Exception as e:
+        error_msg = str(e).replace("\n", " ")[:80]
+        log_audit(
+            "Batch_Events_Concat", raw_count, dedup_count, 0, f"FAILED: {error_msg}"
+        )
+        print(f"  [X] Failed: {error_msg}")
 
 
 if __name__ == "__main__":
