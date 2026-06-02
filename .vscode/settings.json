@@ -11,5 +11,7 @@
       "username": "postgres",
       "name": "homePc"
     }
-  ]
+  ],
+  "editor.cursorBlinking": "solid",
+  "editor.overtypeCursorStyle": "underline"
 }

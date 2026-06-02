@@ -45,6 +45,8 @@ def parse_trade_events(file_path: str, event_type: str) -> pl.DataFrame:
     if df.is_empty():
         return pl.DataFrame()
 
+    df = df.rename({c: c.strip() for c in df.columns})
+
     # Map the dirty column names to our clean schema
     rename_map = {
         "Date": "ReportDate",
@@ -67,6 +69,9 @@ def parse_trade_events(file_path: str, event_type: str) -> pl.DataFrame:
     df = df.select(
         [pl.col(old).alias(new) for old, new in rename_map.items() if old in df.columns]
     )
+
+    if df.width == 0:
+        return pl.DataFrame()
 
     # Vectorized Casts & Date Parsing
     df = df.with_columns(
@@ -180,13 +185,15 @@ def execute_events_pipeline(start_date_str="1900-01-01"):
         arrow_table = master_events_df.to_arrow()
         engine.register("temp_events", arrow_table)
 
-        engine.execute("""
+        engine.execute(
+            """
             INSERT INTO trade_events_ledger ("ReportDate", "Ticker", "EventType", "SecurityName", "ClientName", "TransactionType", "Quantity", "TradePrice", "Remarks")
             SELECT "ReportDate", "Ticker", "EventType", "SecurityName", "ClientName", "TransactionType", "Quantity", "TradePrice", "Remarks"
             FROM temp_events
             ON CONFLICT ("ReportDate", "Ticker", "ClientName", "TransactionType", "Quantity", "TradePrice") 
             DO NOTHING;
-        """)
+        """
+        )
         engine.unregister("temp_events")
         log_audit("Batch_Events_Concat", raw_count, dedup_count, dedup_count, "SUCCESS")
         print("[SUCCESS] Trade Events Ledger Update Complete.")

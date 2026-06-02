@@ -4,7 +4,7 @@ import json
 import zipfile
 import polars as pl
 from datetime import datetime
-from scripts.database import engine
+from database import engine
 import uuid
 import logging
 import re
@@ -119,14 +119,58 @@ def parse_modern_fo_df(df):
 
     df = df.with_columns(
         [
-            pl.col("TradDt")
-            .str.strip_chars()
-            .str.strptime(pl.Date, format="%d-%b-%Y", strict=False)
-            .alias("ReportDate"),
-            pl.col("XpryDt")
-            .str.strip_chars()
-            .str.strptime(pl.Date, format="%d-%b-%Y", strict=False)
-            .alias("ExpiryDate"),
+            pl.coalesce(
+                [
+                    pl.col("TradDt")
+                    .cast(pl.String)
+                    .str.strip_chars()
+                    .str.strptime(pl.Date, format="%Y-%m-%d", strict=False),
+                    pl.col("TradDt")
+                    .cast(pl.String)
+                    .str.strip_chars()
+                    .str.strptime(pl.Date, format="%d-%m-%Y", strict=False),
+                    pl.col("TradDt")
+                    .cast(pl.String)
+                    .str.strip_chars()
+                    .str.to_lowercase()
+                    .str.to_titlecase()
+                    .str.strptime(pl.Date, format="%d-%b-%Y", strict=False),
+                    pl.col("TradDt")
+                    .cast(pl.String)
+                    .str.strip_chars()
+                    .str.strptime(pl.Date, format="%d/%m/%Y", strict=False),
+                    pl.col("TradDt")
+                    .cast(pl.String)
+                    .str.strip_chars()
+                    .str.strptime(pl.Date, format="%Y%m%d", strict=False),
+                ]
+            ).alias("ReportDate"),
+            pl.coalesce(
+                [
+                    pl.col("XpryDt")
+                    .cast(pl.String)
+                    .str.strip_chars()
+                    .str.strptime(pl.Date, format="%Y-%m-%d", strict=False),
+                    pl.col("XpryDt")
+                    .cast(pl.String)
+                    .str.strip_chars()
+                    .str.strptime(pl.Date, format="%d-%m-%Y", strict=False),
+                    pl.col("XpryDt")
+                    .cast(pl.String)
+                    .str.strip_chars()
+                    .str.to_lowercase()
+                    .str.to_titlecase()
+                    .str.strptime(pl.Date, format="%d-%b-%Y", strict=False),
+                    pl.col("XpryDt")
+                    .cast(pl.String)
+                    .str.strip_chars()
+                    .str.strptime(pl.Date, format="%d/%m/%Y", strict=False),
+                    pl.col("XpryDt")
+                    .cast(pl.String)
+                    .str.strip_chars()
+                    .str.strptime(pl.Date, format="%Y%m%d", strict=False),
+                ]
+            ).alias("ExpiryDate"),
         ]
     )
 
@@ -169,14 +213,50 @@ def parse_legacy_fo_df(df):
 
     df = df.with_columns(
         [
-            pl.col("TIMESTAMP")
-            .str.strip_chars()
-            .str.strptime(pl.Date, format="%d-%b-%Y", strict=False)
-            .alias("ReportDate"),
-            pl.col("EXPIRY_DT")
-            .str.strip_chars()
-            .str.strptime(pl.Date, format="%d-%b-%Y", strict=False)
-            .alias("ExpiryDate"),
+            pl.coalesce(
+                [
+                    pl.col("TIMESTAMP")
+                    .cast(pl.String)
+                    .str.strip_chars()
+                    .str.strptime(pl.Date, format="%Y-%m-%d", strict=False),
+                    pl.col("TIMESTAMP")
+                    .cast(pl.String)
+                    .str.strip_chars()
+                    .str.strptime(pl.Date, format="%d-%m-%Y", strict=False),
+                    pl.col("TIMESTAMP")
+                    .cast(pl.String)
+                    .str.strip_chars()
+                    .str.to_lowercase()
+                    .str.to_titlecase()
+                    .str.strptime(pl.Date, format="%d-%b-%Y", strict=False),
+                    pl.col("TIMESTAMP")
+                    .cast(pl.String)
+                    .str.strip_chars()
+                    .str.strptime(pl.Date, format="%Y%m%d", strict=False),
+                ]
+            ).alias("ReportDate"),
+            pl.coalesce(
+                [
+                    pl.col("EXPIRY_DT")
+                    .cast(pl.String)
+                    .str.strip_chars()
+                    .str.strptime(pl.Date, format="%Y-%m-%d", strict=False),
+                    pl.col("EXPIRY_DT")
+                    .cast(pl.String)
+                    .str.strip_chars()
+                    .str.strptime(pl.Date, format="%d-%m-%Y", strict=False),
+                    pl.col("EXPIRY_DT")
+                    .cast(pl.String)
+                    .str.strip_chars()
+                    .str.to_lowercase()
+                    .str.to_titlecase()
+                    .str.strptime(pl.Date, format="%d-%b-%Y", strict=False),
+                    pl.col("EXPIRY_DT")
+                    .cast(pl.String)
+                    .str.strip_chars()
+                    .str.strptime(pl.Date, format="%Y%m%d", strict=False),
+                ]
+            ).alias("ExpiryDate"),
         ]
     )
 
@@ -219,6 +299,7 @@ def parse_mcx(file_path):
     except Exception:
         return pl.DataFrame()
 
+    # 1. Aggressively unpack JSON to find the underlying array of records
     if isinstance(data, dict):
         if "d" in data and isinstance(data["d"], dict) and "Data" in data["d"]:
             data = data["d"]["Data"]
@@ -227,7 +308,12 @@ def parse_mcx(file_path):
         elif "Data" in data:
             data = data["Data"]
         else:
-            data = [data]
+            # Auto-detect any top-level list if standard keys fail
+            extracted_list = [v for k, v in data.items() if isinstance(v, list)]
+            if extracted_list:
+                data = extracted_list[0]
+            else:
+                data = [data]
 
     if not data:
         return pl.DataFrame()
@@ -238,24 +324,100 @@ def parse_mcx(file_path):
 
     df = df.rename({c: c.strip() for c in df.columns})
 
-    if "Date" not in df.columns:
-        if "date" in df.columns:
-            df = df.rename({"date": "Date"})
-        else:
-            return pl.DataFrame()
+    # 2. Dynamic Column Detection
+    # Protects against JSON key rotations
+    date_candidates = [
+        "Date",
+        "date",
+        "TradeDate",
+        "trade_date",
+        "Trade Date",
+        "ReportDate",
+    ]
+    date_col = next((c for c in date_candidates if c in df.columns), None)
 
-    # Parse Dates
-    df = df.with_columns(
-        [
-            pl.col("Date")
-            .str.strptime(pl.Date, format="%d-%b-%Y", strict=False)
-            .alias("ReportDate"),
-            pl.col("ExpiryDate")
-            .str.strptime(pl.Date, format="%d-%b-%Y", strict=False)
-            .alias("ExpiryDate"),
-        ]
-    )
+    if not date_col:
+        # File is an API error payload or holiday response with no date keys
+        return pl.DataFrame()
 
+    if date_col != "Date":
+        df = df.rename({date_col: "Date"})
+
+    expiry_candidates = [
+        "ExpiryDate",
+        "expiryDate",
+        "Expiry Date",
+        "expiry_date",
+        "Expiry",
+    ]
+    expiry_col = next((c for c in expiry_candidates if c in df.columns), None)
+
+    if expiry_col and expiry_col != "ExpiryDate":
+        df = df.rename({expiry_col: "ExpiryDate"})
+
+    # 3. Universal Date Parser Block
+    def parse_dates_safely(column):
+        return pl.coalesce(
+            [
+                # Standard ISO / Timestamps (2026-05-25 or 2026-05-25T15:30)
+                pl.col(column)
+                .cast(pl.String)
+                .str.strip_chars()
+                .str.slice(0, 10)
+                .str.strptime(pl.Date, format="%Y-%m-%d", strict=False),
+                # US Format (Unmasked by the May 29th payload: 05/29/2026)
+                pl.col(column)
+                .cast(pl.String)
+                .str.strip_chars()
+                .str.strptime(pl.Date, format="%m/%d/%Y", strict=False),
+                # Spaced or Dashed Indian Formats
+                pl.col(column)
+                .cast(pl.String)
+                .str.strip_chars()
+                .str.strptime(pl.Date, format="%d-%m-%Y", strict=False),
+                pl.col(column)
+                .cast(pl.String)
+                .str.strip_chars()
+                .str.strptime(pl.Date, format="%d/%m/%Y", strict=False),
+                # Textually named months (Requires titlecase normalization)
+                pl.col(column)
+                .cast(pl.String)
+                .str.strip_chars()
+                .str.to_lowercase()
+                .str.to_titlecase()
+                .str.strptime(pl.Date, format="%d-%b-%Y", strict=False),
+                pl.col(column)
+                .cast(pl.String)
+                .str.strip_chars()
+                .str.to_lowercase()
+                .str.to_titlecase()
+                .str.strptime(pl.Date, format="%d %b %Y", strict=False),
+                # Condensed Formats (Highly common in MCX: 25May2026, 25052026)
+                pl.col(column)
+                .cast(pl.String)
+                .str.strip_chars()
+                .str.to_lowercase()
+                .str.to_titlecase()
+                .str.strptime(pl.Date, format="%d%b%Y", strict=False),
+                pl.col(column)
+                .cast(pl.String)
+                .str.strip_chars()
+                .str.strptime(pl.Date, format="%d%m%Y", strict=False),
+                pl.col(column)
+                .cast(pl.String)
+                .str.strip_chars()
+                .str.strptime(pl.Date, format="%Y%m%d", strict=False),
+            ]
+        )
+
+    # Apply Parser
+    cols_to_assign = [parse_dates_safely("Date").alias("ReportDate")]
+    if "ExpiryDate" in df.columns:
+        cols_to_assign.append(parse_dates_safely("ExpiryDate").alias("ExpiryDate"))
+
+    df = df.with_columns(cols_to_assign)
+
+    # 4. Standardize Remaining Columns
     rename_map = {
         "Symbol": "Ticker",
         "InstrumentName": "InstrumentType",
@@ -270,10 +432,13 @@ def parse_mcx(file_path):
         "OpenInterest": "Open_Interest",
     }
 
-    df = df.select(
-        [pl.col(k).alias(v) for k, v in rename_map.items() if k in df.columns]
-        + [pl.col("ReportDate"), pl.col("ExpiryDate")]
-    )
+    cols_to_select = [
+        pl.col(k).alias(v) for k, v in rename_map.items() if k in df.columns
+    ] + [pl.col("ReportDate")]
+    if "ExpiryDate" in df.columns:
+        cols_to_select.append(pl.col("ExpiryDate"))
+
+    df = df.select(cols_to_select)
 
     if "StrikePrice" in df.columns:
         df = df.with_columns(pl.col("StrikePrice").fill_null("0.0"))
@@ -320,12 +485,13 @@ def push_chunk_to_db(df, file_name="Unknown_File"):
     df = df.select(final_columns)
 
     # Clean empty strings and dashes
+    # Clean empty strings and dashes
     df = df.with_columns(
         [
-            pl.when(pl.col(pl.Utf8).str.strip_chars() == "-")
+            pl.when(pl.col(pl.String).str.strip_chars() == "-")
             .then(None)
-            .otherwise(pl.col(pl.Utf8))
-            .keep_name()
+            .otherwise(pl.col(pl.String))
+            .name.keep()
         ]
     )
 
