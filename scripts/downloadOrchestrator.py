@@ -80,34 +80,39 @@ def run_isolated_script(script_name, extra_args=None):
     return True
 
 
-def get_domain_watermark(table_name, friendly_name):
+def get_scalar_value(query):
+    """Safely extracts a scalar value via Arrow zero-copy stream."""
     try:
-        if table_name == "unified_market_master":
-            # THE WEAKEST LINK STRATEGY:
-            query = """
-            SELECT MIN(max_date) FROM (
-                SELECT "InstrumentType", MAX("ReportDate") as max_date 
-                FROM unified_market_master 
-                WHERE "InstrumentType" IN ('CASH', 'STF', 'STO', 'IDF', 'IDO', 'FUTCOM', 'OPTFUT')
-                GROUP BY "InstrumentType"
-            ) subquery;
-            """
-            res_tuple = engine.execute(query).fetchone()
-        else:
-            # Standard check for other tables
-            query = f'SELECT MAX("ReportDate") FROM {table_name}'
-            res_tuple = engine.execute(query).fetchone()
-
-        # Extract scalar value from PyArrow tuple
-        res = res_tuple[0] if res_tuple else None
-
-        if res:
-            date_val = pd.to_datetime(res).date()
-            write_log(f"[*] {friendly_name} Weakest-Link Watermark: {date_val}\n")
-            return date_val
-
+        with engine.stream_lazy(query) as stream:
+            table = stream.read_all()
+            if table.num_rows > 0:
+                # Extract first column, first row, cast to native Python type
+                val = table.column(0)[0].as_py()
+                return val
     except Exception as e:
-        write_log(f"[-] DB Query Failed for {table_name}: {e}\n")
+        write_log(f"[-] DB Query Failed: {e}\n")
+    return None
+
+
+def get_domain_watermark(table_name, friendly_name):
+    if table_name == "unified_market_master":
+        query = """
+        SELECT MIN(max_date) FROM (
+            SELECT "InstrumentType", MAX("ReportDate") as max_date 
+            FROM unified_market_master 
+            WHERE "InstrumentType" IN ('CASH', 'STF', 'STO', 'IDF', 'IDO', 'FUTCOM', 'OPTFUT')
+            GROUP BY "InstrumentType"
+        ) subquery;
+        """
+    else:
+        query = f'SELECT MAX("ReportDate") FROM {table_name}'
+
+    res = get_scalar_value(query)
+
+    if res:
+        date_val = pd.to_datetime(res).date()
+        write_log(f"[*] {friendly_name} Weakest-Link Watermark: {date_val}\n")
+        return date_val
 
     default_date = pd.to_datetime("2015-01-01").date()
     write_log(
@@ -117,28 +122,18 @@ def get_domain_watermark(table_name, friendly_name):
 
 
 def get_events_highest_watermark():
-    """Finds the absolute highest available date across Bulk, Block, and Short Selling."""
     watermarks = []
 
-    try:
-        # 1. Check Trade Events (Bulk & Block)
-        res_events = engine.execute(
-            'SELECT MAX("ReportDate") FROM trade_events_ledger'
-        ).fetchone()
-        if res_events and res_events[0]:
-            watermarks.append(pd.to_datetime(res_events[0]).date())
+    res_events = get_scalar_value('SELECT MAX("ReportDate") FROM trade_events_ledger')
+    if res_events:
+        watermarks.append(pd.to_datetime(res_events).date())
 
-        # 2. Check Short Selling (From Unified Master)
-        res_short = engine.execute(
-            'SELECT MAX("ReportDate") FROM unified_market_master WHERE "Short_Volume" IS NOT NULL'
-        ).fetchone()
-        if res_short and res_short[0]:
-            watermarks.append(pd.to_datetime(res_short[0]).date())
+    res_short = get_scalar_value(
+        'SELECT MAX("ReportDate") FROM unified_market_master WHERE "Short_Volume" IS NOT NULL'
+    )
+    if res_short:
+        watermarks.append(pd.to_datetime(res_short).date())
 
-    except Exception as e:
-        write_log(f"[-] DB Query Failed for Trade Events: {e}\n")
-
-    # Return the HIGHEST date found
     if watermarks:
         highest_date = max(watermarks)
         write_log(f"[*] Trade Events Watermark (Highest): {highest_date}\n")

@@ -49,14 +49,16 @@ def register_discovered_tickers(tickers, data_source="auto"):
     df_meta = pd.DataFrame(records)
     try:
         engine.register("temp_macro_meta", df_meta)
-        engine.execute("""
+        engine.execute(
+            """
             INSERT INTO market_metadata ("Ticker", "IndicatorName", "TargetTable", "AssetClass", "Exchange", "IsActive", "Description")
             SELECT "Ticker", "IndicatorName", "TargetTable", "AssetClass", "Exchange", "IsActive", "Description" FROM temp_macro_meta
             ON CONFLICT ("Ticker") 
             DO UPDATE SET 
                 "Exchange" = EXCLUDED."Exchange",
                 "Description" = EXCLUDED."Description";
-        """)
+        """
+        )
         engine.unregister("temp_macro_meta")
         print(f"SUCCESS: {len(records)} client tickers verified in market_metadata.")
     except Exception as e:
@@ -65,13 +67,14 @@ def register_discovered_tickers(tickers, data_source="auto"):
 
 def get_active_global_assets():
     query = """
-        SELECT "Ticker", "AssetClass","Exchange"
+        SELECT "Ticker", "AssetClass", "Exchange"
         FROM market_metadata 
         WHERE "IsActive" = true; 
     """
     try:
-        # DUCKDB FIX: execute().df() instead of SQLAlchemy read_sql
-        return engine.execute(query).df()
+        # Bypass eager proxy execution and stream directly to Pandas
+        with engine.stream_lazy(query) as stream:
+            return stream.read_pandas()
     except Exception as e:
         print(f"[ERROR] Failed to fetch equities from DB: {e}")
         return pd.DataFrame()
@@ -341,12 +344,14 @@ def push_to_database(df):
 
         # DUCKDB FIX: Native Upsert execution
         engine.register("temp_md", macro_daily)
-        engine.execute("""
+        engine.execute(
+            """
             INSERT INTO macro_daily_ledger ("IndicatorName", "ReportDate", "Open", "High", "Low", "Close_Value", "Volume")
             SELECT "IndicatorName", CAST("ReportDate" AS DATE), "Open", "High", "Low", "Close_Value", "Volume" FROM temp_md
             ON CONFLICT ("IndicatorName", "ReportDate") DO UPDATE SET 
                 "Open"=EXCLUDED."Open", "High"=EXCLUDED."High", "Low"=EXCLUDED."Low", "Close_Value"=EXCLUDED."Close_Value", "Volume"=EXCLUDED."Volume";
-        """)
+        """
+        )
         engine.unregister("temp_md")
 
     # 2. MACRO INTRADAY LEDGER
@@ -361,12 +366,14 @@ def push_to_database(df):
         engine.register("temp_mi", macro_intra)
 
         # FIX: Removed split ReportTime column, using full TIMESTAMP cast for ReportDate
-        engine.execute("""
+        engine.execute(
+            """
             INSERT INTO macro_intraday_ledger ("IndicatorName", "ReportDate", "Timeframe", "Open", "High", "Low", "Close_Value", "Volume")
             SELECT "IndicatorName", CAST("ReportDate" AS TIMESTAMP), "Timeframe", "Open", "High", "Low", "Close_Value", "Volume" FROM temp_mi
             ON CONFLICT ("IndicatorName", "ReportDate", "Timeframe") DO UPDATE SET 
                 "Open"=EXCLUDED."Open", "High"=EXCLUDED."High", "Low"=EXCLUDED."Low", "Close_Value"=EXCLUDED."Close_Value", "Volume"=EXCLUDED."Volume";
-        """)
+        """
+        )
         engine.unregister("temp_mi")
 
     # 3. GLOBAL ASSETS DAILY
@@ -376,12 +383,14 @@ def push_to_database(df):
         print(f" -> Pushing {len(asset_daily)} records to global_assets_daily...")
 
         engine.register("temp_gd", asset_daily)
-        engine.execute("""
+        engine.execute(
+            """
             INSERT INTO global_assets_daily ("Ticker", "ReportDate", "AssetClass", "Open", "High", "Low", "Close", "Volume")
             SELECT "Ticker", CAST("ReportDate" AS DATE), "AssetClass", "Open", "High", "Low", "Close", "Volume" FROM temp_gd
             ON CONFLICT ("Ticker", "ReportDate") DO UPDATE SET 
                 "Open"=EXCLUDED."Open", "High"=EXCLUDED."High", "Low"=EXCLUDED."Low", "Close"=EXCLUDED."Close", "Volume"=EXCLUDED."Volume";
-        """)
+        """
+        )
         engine.unregister("temp_gd")
 
     # 4. GLOBAL ASSETS INTRADAY
@@ -391,12 +400,14 @@ def push_to_database(df):
         print(f" -> Pushing {len(asset_intra)} records to global_assets_intraday...")
 
         engine.register("temp_gi", asset_intra)
-        engine.execute("""
+        engine.execute(
+            """
             INSERT INTO global_assets_intraday ("Ticker", "ReportDate", "Timeframe", "Open", "High", "Low", "Close", "Volume")
             SELECT "Ticker", CAST("ReportDate" AS TIMESTAMP), "Timeframe", "Open", "High", "Low", "Close", "Volume" FROM temp_gi
             ON CONFLICT ("Ticker", "ReportDate", "Timeframe") DO UPDATE SET 
                 "Open"=EXCLUDED."Open", "High"=EXCLUDED."High", "Low"=EXCLUDED."Low", "Close"=EXCLUDED."Close", "Volume"=EXCLUDED."Volume";
-        """)
+        """
+        )
         engine.unregister("temp_gi")
 
     print("[SUCCESS] All Macro Pipeline Data Successfully Routed and Upserted.")
