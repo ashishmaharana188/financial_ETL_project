@@ -4,6 +4,10 @@ import sys
 from datetime import datetime, timedelta
 import polars as pl
 from contextlib import contextmanager
+from dataclasses import dataclass
+import pyarrow as pa
+import tempfile
+import json
 
 DB_PATH = "market_data.duckdb"
 
@@ -13,6 +17,9 @@ def get_db_connection(read_only=True):
     con.execute("INSTALL json;")
     con.execute("LOAD json;")
     return con
+
+
+tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
 
 
 class DuckDBEngineProxy:
@@ -55,6 +62,13 @@ class DuckDBEngineProxy:
 
     @contextmanager
     def stream_lazy(self, query_string, params=None):
+
+        @dataclass
+        class StreamResult:
+            reader: pa.RecordBatchReader
+            profile_path: str | None
+            profile: dict | None = None
+
         """Yields an out-of-core PyArrow RecordBatchReader natively across all sessions."""
         is_active_writer = hasattr(self, "_active_write_con")
         con = (
@@ -62,13 +76,28 @@ class DuckDBEngineProxy:
             if is_active_writer
             else get_db_connection(read_only=self.default_read_only)
         )
+
         try:
             if params:
-                # Update to the correct API method
+                con.execute("PRAGMA enable_profiling='json'")
+                con.execute(f"PRAGMA profiling_output='{tmp.name}'")
+
                 reader = con.execute(query_string, params).to_arrow_reader()
+
             else:
+                con.execute("PRAGMA enable_profiling='json'")
+                con.execute(f"PRAGMA profiling_output='{tmp.name}'")
+
                 reader = con.execute(query_string).to_arrow_reader()
-            yield reader
+
+            result = StreamResult(reader=reader, profile_path=tmp.name, profile=None)
+
+            yield result
+
+            # profiling
+            with open(tmp.name) as f:
+
+                result.profile = json.load(f)
         finally:
             if not is_active_writer:
                 con.close()
@@ -121,7 +150,8 @@ def initialize_database():
     print("[*] Initializing Native DuckDB Schema...")
 
     # 1. Market Metadata
-    engine.execute("""
+    engine.execute(
+        """
         CREATE TABLE IF NOT EXISTS market_metadata (
             "Ticker" VARCHAR PRIMARY KEY,
             "IndicatorName" VARCHAR,
@@ -134,10 +164,12 @@ def initialize_database():
             "valid_data_since" DATE,
             "Description" VARCHAR
         );
-    """)
+    """
+    )
 
     # 2. Macro Daily Ledger
-    engine.execute("""
+    engine.execute(
+        """
         CREATE TABLE IF NOT EXISTS macro_daily_ledger (
             "IndicatorName" VARCHAR,
             "ReportDate" DATE,
@@ -148,10 +180,12 @@ def initialize_database():
             "Volume" BIGINT,
             PRIMARY KEY ("IndicatorName", "ReportDate")
         );
-    """)
+    """
+    )
 
     # 3. Macro Intraday Ledger
-    engine.execute("""
+    engine.execute(
+        """
         CREATE TABLE IF NOT EXISTS macro_intraday_ledger (
             "IndicatorName" VARCHAR,
             "ReportDate" TIMESTAMP,
@@ -163,10 +197,12 @@ def initialize_database():
             "Volume" BIGINT,
             PRIMARY KEY ("IndicatorName", "ReportDate", "Timeframe")
         );
-    """)
+    """
+    )
 
     # 4. Prediction Ledger
-    engine.execute("""
+    engine.execute(
+        """
         CREATE TABLE IF NOT EXISTS prediction_ledger (
             "engine_name" VARCHAR,
             "ticker" VARCHAR,
@@ -184,10 +220,12 @@ def initialize_database():
             "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY ("engine_name", "ticker", "asof_date", "horizon")
         );
-    """)
+    """
+    )
 
     # 5. Global Assets Daily
-    engine.execute("""
+    engine.execute(
+        """
         CREATE TABLE IF NOT EXISTS global_assets_daily (
             "Ticker" VARCHAR,
             "ReportDate" DATE,
@@ -199,10 +237,12 @@ def initialize_database():
             "Volume" BIGINT,
             PRIMARY KEY ("Ticker", "ReportDate")
         );
-    """)
+    """
+    )
 
     # 6. Global Assets Intraday
-    engine.execute("""
+    engine.execute(
+        """
         CREATE TABLE IF NOT EXISTS global_assets_intraday (
             "Ticker" VARCHAR,
             "ReportDate" TIMESTAMP,
@@ -214,12 +254,14 @@ def initialize_database():
             "Volume" BIGINT,
             PRIMARY KEY ("Ticker", "ReportDate", "Timeframe")
         );
-    """)
+    """
+    )
 
     # engine.execute("DROP TABLE IF EXISTS unified_market_master;")
 
     # 7. Unified Market Master
-    engine.execute("""
+    engine.execute(
+        """
         CREATE TABLE IF NOT EXISTS unified_market_master (
             "Ticker" VARCHAR,
             "ReportDate" DATE,
@@ -244,11 +286,13 @@ def initialize_database():
             "Underlying_Price" DOUBLE,
             PRIMARY KEY ("Ticker", "ReportDate", "InstrumentType", "ExpiryDate", "StrikePrice", "OptionType", "Exchange_Series")
         );
-    """)
+    """
+    )
     # engine.execute("DROP TABLE IF EXISTS institutional_ledger;")
 
     # 8. Institutional Ledger
-    engine.execute("""
+    engine.execute(
+        """
         CREATE TABLE IF NOT EXISTS institutional_ledger (
             "ReportDate" TIMESTAMP,
             "ClientType" VARCHAR,
@@ -272,12 +316,14 @@ def initialize_database():
             "Total_Short_Contracts" BIGINT,
             PRIMARY KEY ("ReportDate", "ClientType")
         );
-    """)
+    """
+    )
 
     # 9. Trade Events Ledger
     # Creates an auto-incrementing sequence for EventID mapping to previous SQLAlchemy autoincrement
     engine.execute("CREATE SEQUENCE IF NOT EXISTS seq_trade_event_id;")
-    engine.execute("""
+    engine.execute(
+        """
         CREATE TABLE IF NOT EXISTS trade_events_ledger (
             "EventID" BIGINT DEFAULT nextval('seq_trade_event_id') PRIMARY KEY,
             "ReportDate" TIMESTAMP NOT NULL,
@@ -291,10 +337,12 @@ def initialize_database():
             "Remarks" VARCHAR,
             UNIQUE("ReportDate", "Ticker", "ClientName", "TransactionType", "Quantity", "TradePrice")
         );
-    """)
+    """
+    )
 
     # 10. AI Forensic Logs
-    engine.execute("""
+    engine.execute(
+        """
         CREATE TABLE IF NOT EXISTS ai_forensic_logs (
             "TicketID" VARCHAR PRIMARY KEY,
             "Timestamp" DATE,
@@ -306,10 +354,12 @@ def initialize_database():
             "Reasoning" VARCHAR,
             "Status" VARCHAR DEFAULT 'PENDING'
         );
-    """)
+    """
+    )
 
     # 11. Raw Financials (JSONB -> JSON)
-    engine.execute("""
+    engine.execute(
+        """
         CREATE TABLE IF NOT EXISTS raw_financials (
             "DataSource" VARCHAR,
             "Ticker" VARCHAR,
@@ -318,10 +368,12 @@ def initialize_database():
             "RawData" JSON,
             PRIMARY KEY ("Ticker", "ReportDate", "StatementType")
         );
-    """)
+    """
+    )
 
     # 12. Quarterly Income Statement
-    engine.execute("""
+    engine.execute(
+        """
         CREATE TABLE IF NOT EXISTS quarterly_income_statement (
             "DataSource" VARCHAR,
             "Ticker" VARCHAR,
@@ -337,10 +389,12 @@ def initialize_database():
             "NetIncome" DOUBLE,
             PRIMARY KEY ("Ticker", "ReportDate")
         );
-    """)
+    """
+    )
 
     # 13. Yearly Income Statement
-    engine.execute("""
+    engine.execute(
+        """
         CREATE TABLE IF NOT EXISTS yearly_income_statement (
             "DataSource" VARCHAR,
             "Ticker" VARCHAR,
@@ -357,10 +411,12 @@ def initialize_database():
             "NetIncome" DOUBLE,
             PRIMARY KEY ("Ticker", "ReportDate")
         );
-    """)
+    """
+    )
 
     # 14. Quarterly Balance Sheet
-    engine.execute("""
+    engine.execute(
+        """
         CREATE TABLE IF NOT EXISTS quarterly_balance_sheet (
             "DataSource" VARCHAR,
             "Ticker" VARCHAR,
@@ -386,10 +442,12 @@ def initialize_database():
             "StockholdersEquity" DOUBLE,
             PRIMARY KEY ("Ticker", "ReportDate")
         );
-    """)
+    """
+    )
 
     # 15. Yearly Balance Sheet
-    engine.execute("""
+    engine.execute(
+        """
         CREATE TABLE IF NOT EXISTS yearly_balance_sheet (
             "DataSource" VARCHAR,
             "Ticker" VARCHAR,
@@ -416,10 +474,12 @@ def initialize_database():
             "StockholdersEquity" DOUBLE,
             PRIMARY KEY ("Ticker", "ReportDate")
         );
-    """)
+    """
+    )
 
     # 16. Quarterly Cash Flow
-    engine.execute("""
+    engine.execute(
+        """
         CREATE TABLE IF NOT EXISTS quarterly_cash_flow (
             "DataSource" VARCHAR,
             "Ticker" VARCHAR,
@@ -436,10 +496,12 @@ def initialize_database():
             "EndingCashBalance" DOUBLE,
             PRIMARY KEY ("Ticker", "ReportDate")
         );
-    """)
+    """
+    )
 
     # 17. Yearly Cash Flow
-    engine.execute("""
+    engine.execute(
+        """
         CREATE TABLE IF NOT EXISTS yearly_cash_flow (
             "DataSource" VARCHAR,
             "Ticker" VARCHAR,
@@ -457,10 +519,12 @@ def initialize_database():
             "EndingCashBalance" DOUBLE,
             PRIMARY KEY ("Ticker", "ReportDate")
         );
-    """)
+    """
+    )
 
     # 18. Yearly Indirect Cash Flow
-    engine.execute("""
+    engine.execute(
+        """
         CREATE TABLE IF NOT EXISTS yearly_indirect_cash_flow (
             "DataSource" VARCHAR,
             "Ticker" VARCHAR,
@@ -498,9 +562,10 @@ def initialize_database():
             "Unmapped_Rollforward" DOUBLE,
             PRIMARY KEY ("Ticker", "ReportDate")
         );
-    """)
+    """
+    )
 
-    print("[+] All tables validated and created successfully.")
+    print("[+] All tables validated and created successfully.\n")
 
 
 # Automatically run on script import to ensure database readiness
