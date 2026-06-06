@@ -4,7 +4,7 @@ import json
 import zipfile
 import polars as pl
 from datetime import datetime
-from database import engine
+from scripts.database import engine
 import uuid
 import logging
 import re

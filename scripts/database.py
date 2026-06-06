@@ -102,6 +102,27 @@ class DuckDBEngineProxy:
             if not is_active_writer:
                 con.close()
 
+    def scalar(self, query_string):
+        """Lightweight native execution for single values, bypassing Arrow/DataFrame overhead."""
+        is_active_writer = hasattr(self, "_active_write_con")
+        con = (
+            self._active_write_con
+            if is_active_writer
+            else duckdb.connect(database=self.db_path, read_only=True)
+        )
+
+        try:
+            result = con.execute(query_string).fetchone()
+            if result and result[0]:
+                return result[0]
+            return None
+        except Exception as e:
+            print(f"[-] DB Proxy Scalar Failure: {e}")
+            return None
+        finally:
+            if not is_active_writer:
+                con.close()
+
     def unregister(self, view_name):
         if hasattr(self, "_active_write_con"):
             self._active_write_con.unregister(view_name)

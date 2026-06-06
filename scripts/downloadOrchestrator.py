@@ -81,17 +81,8 @@ def run_isolated_script(script_name, extra_args=None):
 
 
 def get_scalar_value(query):
-    """Safely extracts a scalar value via Arrow zero-copy stream."""
-    try:
-        with engine.stream_lazy(query) as stream:
-            table = stream.read_all()
-            if table.num_rows > 0:
-                # Extract first column, first row, cast to native Python type
-                val = table.column(0)[0].as_py()
-                return val
-    except Exception as e:
-        write_log(f"[-] DB Query Failed: {e}\n")
-    return None
+    """Delegates scalar extraction to the database proxy."""
+    return engine.scalar(query)
 
 
 def get_domain_watermark(table_name, friendly_name):
