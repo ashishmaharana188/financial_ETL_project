@@ -66,8 +66,7 @@ class DuckDBEngineProxy:
         @dataclass
         class StreamResult:
             reader: pa.RecordBatchReader
-            profile_path: str | None
-            profile: dict | None = None
+            duckdb_profile: dict | None = None
 
         """Yields an out-of-core PyArrow RecordBatchReader natively across all sessions."""
         is_active_writer = hasattr(self, "_active_write_con")
@@ -90,14 +89,14 @@ class DuckDBEngineProxy:
 
                 reader = con.execute(query_string).to_arrow_reader()
 
-            result = StreamResult(reader=reader, profile_path=tmp.name, profile=None)
+            result = StreamResult(reader=reader, duckdb_profile=None)
 
             yield result
 
             # profiling
             with open(tmp.name) as f:
 
-                result.profile = json.load(f)
+                result.duckdb_profile = json.load(f)
         finally:
             if not is_active_writer:
                 con.close()
