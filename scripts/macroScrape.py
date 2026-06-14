@@ -72,11 +72,13 @@ def get_active_global_assets():
         WHERE "IsActive" = true; 
     """
     try:
-        # Bypass eager proxy execution and stream directly to Pandas
         with engine.stream_lazy(query) as stream:
-            return stream.read_pandas()
+            # FIX: RecordBatchReader requires read_pandas()
+            return stream.reader.read_pandas()
     except Exception as e:
         print(f"[ERROR] Failed to fetch equities from DB: {e}")
+        import pandas as pd
+
         return pd.DataFrame()
 
 
