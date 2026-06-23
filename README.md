@@ -84,7 +84,7 @@
   <li><strong>AI Integration:</strong> Scripts like <code>ai_agent.py</code>, <code>reasoning.py</code>, and <code>vectorize.py</code> embed AI directly into the pipeline, allowing natural language queries against financial data and intelligent anomaly detection.</li>
   <li><strong>Interfaces:</strong> Users interact with the data via Python-based interfaces such as <code>dashboard.py</code>, specialized UI scripts (<code>olsEngine1UI.py</code>), and exploratory Jupyter Notebooks (<code>pandas.ipynb</code>, <code>statementScrape.ipynb</code>).
     
-  RUN - engine = create_engine("postgresql+psycopg2://"user":"password"@localhost:5432/{db name}")
+  RUN -
 
   streamlit run dashboard.py
   </li>
