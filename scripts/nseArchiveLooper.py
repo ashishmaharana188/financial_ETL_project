@@ -3,6 +3,7 @@ import time
 import json
 from datetime import datetime, timedelta
 from curl_cffi import requests
+import re
 
 CACHE_DIR = "offline_data_cache/master_archives"
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -73,37 +74,116 @@ class MasterArchiveScraper:
         # If it reaches here, both URLs failed (likely a market holiday)
         pass
 
-    def fetch_mcx_json(self, date_YYYYMMDD, save_path, file_desc):
-        """POST request to the hidden MCX backend API."""
+    # 1. Update the initialization block to extract the CSRF token
+    def _initialize_mcx_session(self):
+        """Harvests ASP.NET session cookies and the mandatory WAF CSRF token."""
+        print("  [*] Handshaking with MCX Frontend...")
+        self.mcx_token = ""
+        try:
+            res = self.session.get(
+                "https://www.mcxindia.com/market-data/bhavcopy",
+                headers=self.nse_headers,
+                timeout=15,
+            )
+
+            # Extract the ASP.NET RequestVerificationToken from the DOM
+            match = re.search(
+                r'name="__RequestVerificationToken"\s+type="hidden"\s+value="([^"]+)"',
+                res.text,
+            )
+            if match:
+                self.mcx_token = match.group(1)
+                print("      [+] Successfully extracted MCX security token.")
+            else:
+                print(
+                    "      [-] Warning: Could not locate RequestVerificationToken in DOM."
+                )
+
+            time.sleep(2)
+        except Exception as e:
+            print(f"  [!] Failed MCX initial handshake: {e}")
+
+    def fetch_mcx_json(self, date_input, save_path, file_desc):
+        """Hits the authentic MCX GET API and extracts the raw array."""
         if os.path.exists(save_path):
             return
 
-        url = "https://www.mcxindia.com/backpage.aspx/GetDateWiseBhavCopy"
-        payload = {"Date": date_YYYYMMDD, "InstrumentName": "ALL"}
+        # 1. Format the date strictly to DD/MM/YYYY to match the GET query parameters
+        if isinstance(date_input, str):
+            # Parses YYYYMMDD string input
+            date_str = f"{date_input[6:8]}/{date_input[4:6]}/{date_input[:4]}"
+        else:
+            date_str = date_input.strftime("%d/%m/%Y")
 
+        # 2. Construct the exact GET URL
+        url = f"https://www.mcxindia.com/market-data/bhavcopy/GetDateWiseBhavCopy?InstrumentName=ALL&fromDate={date_str}"
+
+        # 3. Minimal headers required for a stateless GET request
         mcx_headers = {
             "Accept": "application/json, text/javascript, */*; q=0.01",
-            "Content-Type": "application/json",
+            "X-Requested-With": "XMLHttpRequest",
             "Referer": "https://www.mcxindia.com/market-data/bhavcopy",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         }
 
         try:
-            res = self.session.post(url, json=payload, headers=mcx_headers, timeout=15)
-            if res.status_code == 200:
-                data = res.json()
+            # Execute GET request (No payload required)
+            res = self.session.get(url, headers=mcx_headers, timeout=15)
 
-                # Check if data payload exists (ASP.NET usually returns {"d": "..."})
-                # If the day was a holiday, the data array will be empty
-                with open(save_path, "w") as f:
-                    json.dump(data, f)
-                print(f"      [+] Saved {file_desc}")
+            if res.status_code == 200:
+                raw_text = res.text.replace("\ufeff", "").strip()
+
+                if (
+                    raw_text.startswith("<!DOCTYPE")
+                    or "<html" in raw_text.lower()
+                    or "<title>" in raw_text
+                ):
+                    print(
+                        f"      [-] MCX Server Error (Soft 404) for {date_str}. Invalid routing."
+                    )
+                    return
+
+                if not raw_text:
+                    print(f"      [-] Empty payload returned from MCX for {date_str}")
+                    return
+
+                data = json.loads(raw_text)
+
+                # Extract internal data array
+                if isinstance(data, dict) and (data.get("IsSuccess") or "Data" in data):
+                    records = data.get("Data", [])
+
+                    if not records:
+                        print(
+                            f"      [-] No records found for {date_str} (Market Holiday / Empty Data)"
+                        )
+                        return
+
+                    with open(save_path, "w") as f:
+                        json.dump(records, f)
+                    print(
+                        f"      [+] Saved {file_desc} as JSON ({len(records)} records)"
+                    )
+                else:
+                    # Fallback if server removes wrapper object
+                    if isinstance(data, list):
+                        with open(save_path, "w") as f:
+                            json.dump(data, f)
+                        print(
+                            f"      [+] Saved {file_desc} as direct JSON List ({len(data)} records)"
+                        )
+                    else:
+                        print(
+                            f"      [-] MCX Server Error for {date_str}: {data.get('Message', 'Invalid Payload')}"
+                        )
 
             elif res.status_code == 404:
-                pass
+                print(f"      [-] Physical 404 error from endpoint for {date_str}")
             else:
-                print(f"      [-] Failed {file_desc} (Status: {res.status_code})")
+                print(f"      [-] Failed {file_desc} (Status Code: {res.status_code})")
+
         except Exception as e:
-            print(f"      [!] Error on {file_desc}: {e}")
+            print(f"      [!] Error processing MCX JSON for {date_str}: {e}")
 
 
 def run_master_archive_backfill():
@@ -156,7 +236,7 @@ def run_master_archive_backfill():
         # Use our new dedicated method for F&O
         scraper.fetch_fo_bhavcopy(current_date, fo_path)
 
-        scraper.fetch_mcx_json(mcx_yyyymmdd, mcx_path, "MCX All Commodities (JSON)")
+        scraper.fetch_mcx_json(current_date, mcx_path, "MCX All Commodities")
 
         # Step back one day
         current_date -= timedelta(days=1)
@@ -213,7 +293,7 @@ if __name__ == "__main__":
 
             # 6. Fetch MCX Market (Delegated to JSON handler)
             mcx_path = os.path.join(CACHE_DIR, f"mcx_bhav_{mcx_yyyymmdd}.json")
-            scraper.fetch_mcx_json(mcx_yyyymmdd, mcx_path, "MCX All Commodities")
+            scraper.fetch_mcx_json(current_date, mcx_path, "MCX All Commodities")
 
             # 7. Advance date and respect Exchange rate limits
             current_date += timedelta(days=1)
